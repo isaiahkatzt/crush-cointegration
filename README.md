@@ -1,2 +1,2 @@
 # crush-cointegration
-cointegration models and project with application to soybean crush
+cointegration models with application to soybean crush data
