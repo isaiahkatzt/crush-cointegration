@@ -1,0 +1,529 @@
+---
+title: "PSTAT 277B: Synthetic Data Application"
+author: "Isaiah Katz"
+date: "Winter 2024"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, warning=F, message=F}
+library(tidyverse)
+library(MASS)
+library(urca)
+library(tsDyn)
+library(vars)
+library(tseries)
+
+library(viridis)
+library(grid)
+library(gridExtra)
+```
+
+### Example 1: white noise process 
+
+Testing Johansen procedure on multivariate series composed of I(1), but non-cointegrated components. Components simulated as AR(1) white noise with $\phi_1 = 1$. 
+
+```{r, EXAMPLE 1 I(1) NO COINTEGRATION, fig.align="center", out.width="50%"}
+## Example 1: multivariate time series composed of independent I(1) processes
+set.seed(1729)
+
+## parameter specification 
+d <- 3; n <- 500
+epsilon.t <- mvrnorm(n, rep(0, d), Sigma = diag(1,d))
+
+## toy model 
+yt.ex1 <- apply(epsilon.t, 2, cumsum) 
+colnames(yt.ex1) <- c("y1", "y2", "y3")
+
+ts.plot(yt.ex1, lty = c(1:d), main="3-Dimensional I(1) Series Without Cointegration", 
+        col = rainbow(d))
+legend(20, -10, c("y1","y2", "y3"), lty=c(1:d), col = rainbow(d))
+```
+
+```{r, EXAMPLE 1 COINTEGRATION CHECK}
+## test for presence of unit roots; all processes nonstationary 
+adf.test(yt.ex1[,1], k = 1)
+adf.test(yt.ex1[,2], k = 1)
+adf.test(yt.ex1[,3], k = 1)
+
+## confirm all processes are I(1) 
+adf.test(diff(yt.ex1[,1]))
+adf.test(diff(yt.ex1[,2]))
+adf.test(diff(yt.ex1[,3]))
+
+## test cointegration rank with Johansen methodology 
+p.ex1 <- VARselect(yt.ex1)
+p.ex1$selection
+
+## trace and eigenvalue statistic using urca -> ca.jo() 
+ex1.eigen.stat <- ca.jo(yt.ex1, type = "eigen", ecdet = "none", K = 2, 
+                        spec = "transitory")
+summary(ex1.eigen.stat)
+
+ex1.trace.stat <- ca.jo(yt.ex1, type = "trace", ecdet = "none", K = 2, 
+                        spec = "transitory")
+summary(ex1.trace.stat)
+
+## trace and eigenvalue statistic using tsDyn -> VECM() and rank.test()
+ex1.vecm <- VECM(yt.ex1, lag = 1, estim = "ML", include = "const")
+ex1.combo.stat <- rank.test(ex1.vecm)
+summary(ex1.combo.stat)
+summary(ex1.vecm)
+```
+
+Johansen test suggests no cointegration present, as expected.  
+
+### Example 2: Bivariate cointegrated VAR(p) process 
+
+Testing Johansen procedure on simulated bivariate VAR(p) process.
+
+```{r, EXAMPLE 2 BIVARIATE COINTEGRATED, fig.align="center", out.width="50%"}
+## Example 2: bivariate cointegrated series 
+set.seed(1729) 
+
+## parameter specification
+d <- 2; n <- 500
+epsilon.t <- mvrnorm(n, mu = rep(0, 3), Sigma = diag(1, 3))
+c.trend <- cumsum(epsilon.t[,3])
+e1 <- arima.sim(list(ar = 0.5), n, innov = epsilon.t[,1])
+e2 <- arima.sim(list(ar = 0.5), n, innov = epsilon.t[,2])
+
+## cointegrating vector
+beta.ex2 <- c(1, -2) 
+
+## model construction 
+yt.ex2.1 <- -beta.ex2[2] * c.trend + e1
+yt.ex2.2 <- c.trend + e2
+yt.ex2 <- cbind(yt.ex2.1, yt.ex2.2)
+  
+linecolors <- viridis(20)[c(5,15)]
+ts.plot(yt.ex2, lty = c(1:d), main = "Bivariate VAR(p) Time Series", 
+        col = linecolors)
+```
+
+```{r, EXAMPLE 2 COINTEGRATION CHECK}
+## test for presence of unit roots; all processes nonstationary 
+adf.test(yt.ex2[,1], k = 1)
+adf.test(yt.ex2[,2], k = 1)
+
+## confirm all processes are I(1)
+adf.test(diff(yt.ex2[,1]), k = 1)
+adf.test(diff(yt.ex2[,2]), k = 1)
+
+# test cointegration rank with Johansen methodology 
+p.ex2 <- VARselect(yt.ex2)
+p.ex2$selection
+
+## trace and eigenvalue statistic using urca -> ca.jo() 
+ex2.eigen.stat <- ca.jo(yt.ex2, type = "eigen", ecdet = "none", K = 2, 
+                        spec = "transitory")
+summary(ex2.eigen.stat)
+
+ex2.trace.stat <- ca.jo(yt.ex2, type = "trace", ecdet = "none", K = 2, 
+                        spec = "transitory")
+summary(ex2.trace.stat)
+
+## trace and eigenvalue statistic using tsDyn -> VECM() and rank.test()
+ex2.vecm <- VECM(yt.ex2, lag = 1, estim = "ML", include = "const")
+ex2.combo.stat <- rank.test(ex2.vecm)
+summary(ex2.combo.stat)
+summary(ex2.vecm)
+
+## verify estimated cointegration vector produces I(0) series   
+coint.vec.ex2 <- ex2.trace.stat@V[,1]
+zt.ex2 <- yt.ex2[,1]*coint.vec.ex2[1] + yt.ex2[,2]*coint.vec.ex2[2]
+ur.df(zt.ex2, selectlags = "AIC")  # suggests stationarity 
+```
+
+Correctly estimated cointegration order 1; also nearly estimated cointegrating vector. Estimated cointegrating relationship yields stationary series. 
+
+### Example 3: Trivariate Cointegrated VAR(p) Process (1 relation)
+
+Testing Johansen procedure on simulated trivariate VAR(p) process. Examples (3) and (4) test cointegration in series with cointegration rank 1 (example 3) and cointegration rank 2 (example 4). 
+
+```{r, EXAMPLE 3 TRIVARIATE COINTEGRATED RANK 1, fig.align="center", out.width="50%"}
+## Example 3: trivariate cointegrated series, cointegration rank 1 
+set.seed(1729)
+
+## parameter specification 
+n <- 500; d <- 3
+epsilon.t <- mvrnorm(n, mu = rep(0, d), Sigma = diag(0.75, d))
+e1 <- arima.sim(list(ar = 0.5), n, innov = epsilon.t[,1])
+e2 <- arima.sim(list(ar = 0.5, -0.5), n, innov = epsilon.t[,2])
+e3 <- arima.sim(list(ar = 0.5, -0.5), n, innov = epsilon.t[,3])
+
+## cointegrating vector   
+beta.ex3 <- c(1, -2, -3)
+
+# model construction
+yt.ex3.2 <- cumsum(e2)
+yt.ex3.3 <- cumsum(e3)
+yt.ex3.1 <- -beta.ex3[2]*yt.ex3.2 -beta.ex3[3]*yt.ex3.3 + e1
+yt.ex3 <- cbind(yt.ex3.1, yt.ex3.2, yt.ex3.3)
+
+ts.plot(yt.ex3, lty = c(1:d), 
+        main = "Trivariate VAR(p): Cointegrated Rank 1", 
+        col = rainbow(d))
+legend(0, -50, c("y1","y2", "y3"), lty=c(1:3), col = rainbow(d))
+```
+
+```{r, EXAMPLE 3 COINTEGRATION CHECK}
+## test for presence of unit roots; all processes nonstationary 
+adf.test(yt.ex3[,1], k = 1)
+adf.test(yt.ex3[,2], k = 1)
+adf.test(yt.ex3[,3], k = 1)
+
+## confirm all processes are I(1)
+adf.test(diff(yt.ex3[,1]), k = 1)
+adf.test(diff(yt.ex3[,2]), k = 1)
+adf.test(diff(yt.ex3[,3]), k = 1)
+
+# test cointegration rank with Johansen methodology 
+p.ex3 <- VARselect(yt.ex3)
+p.ex3$selection
+
+## trace and eigenvalue statistic using urca -> ca.jo() 
+ex3.eigen.stat <- ca.jo(yt.ex3, type = "eigen", ecdet = "none", K = 2, 
+                        spec = "transitory")
+summary(ex3.eigen.stat)
+
+ex3.trace.stat <- ca.jo(yt.ex3, type = "trace", ecdet = "none", K = 2, 
+                        spec = "transitory")
+summary(ex3.trace.stat)
+
+## trace and eigenvalue statistic using tsDyn -> VECM() and rank.test()
+ex3.vecm <- VECM(yt.ex3, lag = 1, estim = "ML", include = "const")
+ex3.combo.stat <- rank.test(ex3.vecm)
+summary(ex3.combo.stat)
+summary(ex3.vecm)
+
+## verify estimated cointegration vector produces I(0) series 
+coint.vec.ex3 <- ex3.trace.stat@V[,1]
+zt.ex3 <- yt.ex3[,1]*coint.vec.ex3[1] + 
+  yt.ex3[,2]*coint.vec.ex3[2] + yt.ex3[,3]*coint.vec.ex3[3]
+ur.df(zt.ex3, selectlags = "AIC")
+```
+
+Correctly estimates cointegration order 1. Estimated cointegrating vector yields stationary series as shown by ADF statistic. 
+
+### Example 4: Trivariate Cointegrated VAR(p) Process (2 relations)
+
+```{r, EXAMPLE 4 TRIVARIATE COINTEGRATED RANK 2, fig.align="center", out.width="50%"}
+## Example 4: trivariate cointegrated series, cointegration rank 2
+set.seed(1729)
+
+## parameter specification 
+n <- 500; d <- 3
+epsilon.t <- mvrnorm(n, mu = rep(0, d), Sigma = diag(1, d))
+e1 <- arima.sim(list(ar = -0.5), n, innov = epsilon.t[,1])
+e2 <- arima.sim(list(ar = -0.25), n, innov = epsilon.t[,2])
+e3 <- arima.sim(list(ar = -0.75), n, innov = epsilon.t[,3])
+
+## cointegrating vector   
+beta.ex4.1 <- c(3, 0, 1)
+beta.ex4.2 <- c(0, -2, 1)
+
+## model construction
+yt.ex4.3 <- cumsum(e3)
+yt.ex4.1 <- -beta.ex4.1[1]*yt.ex4.3 + e1
+yt.ex4.2 <- -beta.ex4.2[2]*yt.ex4.3 + e2
+yt.ex4 <- cbind(yt.ex4.1, yt.ex4.2, yt.ex4.3)
+
+ts.plot(yt.ex4, lty = c(1:d), 
+        main = "Trivariate VAR(p): Cointegrated Rank 2", 
+        col = rainbow(d))
+legend(0, -20, c("y1","y2", "y3"), lty=c(1:3), col = rainbow(d))
+```
+
+```{r, EXAMPLE 4 COINTEGRATION CHECK}
+## test for presence of unit roots; all processes nonstationary 
+adf.test(yt.ex4[,1], k = 1)
+adf.test(yt.ex4[,2], k = 1)
+adf.test(yt.ex4[,3], k = 1)
+
+## confirm all processes are I(1)
+adf.test(diff(yt.ex4[,1]), k = 1)
+adf.test(diff(yt.ex4[,2]), k = 1)
+adf.test(diff(yt.ex4[,3]), k = 1)
+
+# test cointegration rank with Johansen methodology 
+p.ex4 <- VARselect(yt.ex4)
+p.ex4$selection
+
+## trace and eigenvalue statistic using urca -> ca.jo() 
+ex4.eigen.stat <- ca.jo(yt.ex4, type = "eigen", ecdet = "none", K = 2, 
+                        spec = "transitory")
+summary(ex4.eigen.stat)
+
+ex4.trace.stat <- ca.jo(yt.ex4, type = "trace", ecdet = "none", K = 2, 
+                        spec = "transitory")
+summary(ex4.trace.stat)
+
+## trace and eigenvalue statistic using tsDyn -> VECM() and rank.test()
+ex4.vecm <- VECM(yt.ex4, lag = 1, estim = "ML", include = "const")
+ex4.combo.stat <- rank.test(ex4.vecm)
+summary(ex4.combo.stat)
+
+ex4.vecm.correct <- VECM(yt.ex4, r = 2, lag = 1, estim = "ML", include = "const")
+ex4.coint.vec <- ex4.vecm.correct$model.specific$coint
+summary(ex4.vecm.correct)
+
+## verify estimated cointegration vector produces I(0) series 
+coint.vec.1.ex4 <- ex4.coint.vec[,1]
+coint.vec.2.ex4 <- ex4.coint.vec[,2]
+zt.ex4.1 <- yt.ex4[,1]*coint.vec.1.ex4[1] + yt.ex4[,2]*coint.vec.1.ex4[2] + 
+  yt.ex4[,3]*coint.vec.1.ex4[3]
+zt.ex4.2 <- yt.ex4[,1]*coint.vec.2.ex4[1] + yt.ex4[,2]*coint.vec.2.ex4[2] + 
+  yt.ex4[,3]*coint.vec.2.ex4[3]
+
+ur.df(zt.ex4.1, selectlags = "AIC")
+ur.df(zt.ex4.2, selectlags = "AIC")
+```
+
+Correctly estimates cointegration order 2; also reasonably accurately estimates cointegration vector. Note that VECM specification from `tsDyn` will not automatically select an appropriate cointegration rank; must be tested (i.e., via `rank.test`) and then re-fit. 
+
+### Example 5: Trivariate Cointegrated VAR(p) With Regime Switching
+
+Testing Johansen procedure on series with regime shift in cointegration rank and cointegration relations using a rolling window.
+
+```{r, EXAMPLE 5: COINTEGRATION WITH REGIME SHIFTS}
+## Example 5: trivariate cointegrated series, varying cointegration relations
+set.seed(1729)
+
+## Parameter specification
+n <- 600; d <- 3
+epsilon.t <- mvrnorm(n, mu = rep(0, d), Sigma = diag(0.75, d))
+e1 <- arima.sim(list(ar = 0.5), n, innov = epsilon.t[,1])
+e2 <- arima.sim(list(ar = 0.5, -0.5), n, innov = epsilon.t[,2])
+e3 <- arima.sim(list(ar = 0.5, -0.5), n, innov = epsilon.t[,3])
+
+## cointegrating vectors 
+beta.ex5.r1 <- c(1, 2, 3)
+beta.ex5.r2.1 <- c(0.5, 0, 1)
+beta.ex5.r2.2 <- c(0, -0.5, 1)
+beta.ex5.r3 <- c(1, 2, 3)
+
+## model construction: regime 1
+yt.ex5.2.r1 <- cumsum(e2[1:200])
+yt.ex5.3.r1 <- cumsum(e3[1:200])
+yt.ex5.1.r1 <- -beta.ex5.r1[2]*yt.ex5.2.r1 -beta.ex5.r1[3]*yt.ex5.3.r1 + e1[1:200]
+yt.ex5.r1 <- cbind(yt.ex5.1.r1, yt.ex5.2.r1, yt.ex5.3.r1)
+
+## model construction: regime 2
+yt.ex5.3.r2 <- sum(e3[1:200]) + cumsum(e3[201:400])
+yt.ex5.1.r2 <- -beta.ex5.r2.1[1]*yt.ex5.3.r2 + e1[201:400]
+yt.ex5.2.r2 <- -beta.ex5.r2.2[2]*yt.ex5.3.r2 + e2[201:400]
+yt.ex5.r2 <- cbind(yt.ex5.1.r2, yt.ex5.2.r2, yt.ex5.3.r2)
+
+## model construction: regime 3 
+yt.ex5.2.r3 <- sum(e2[1:400]) + cumsum(e2[401:600])
+yt.ex5.3.r3 <- sum(e3[1:400]) + cumsum(e3[401:600])
+yt.ex5.1.r3 <- -beta.ex5.r3[2]*yt.ex5.2.r3 -beta.ex5.r3[3]*yt.ex5.3.r3 + e1[401:600]
+yt.ex5.r3 <- cbind(yt.ex5.1.r3, yt.ex5.2.r3, yt.ex5.3.r3)
+
+yt.ex5 <- rbind(yt.ex5.r1, yt.ex5.r2, yt.ex5.r3)
+
+ts.plot(yt.ex5, lty = c(1:d), 
+        main = "Trivariate With Cointegration Regime Changes", 
+        col = rainbow(d))
+legend(0, -20, c("y1","y2", "y3"), lty=c(1:3), col = rainbow(d))
+```
+
+```{r, EXAMPLE 5 COINTEGRATION CHECK PART 1}
+## test for presence of unit roots; all processes nonstationary 
+adf.test(yt.ex5[,1], k = 1)
+adf.test(yt.ex5[,2], k = 1)
+adf.test(yt.ex5[,3], k = 1)
+
+## verify all I(1) processes; note result is iffy due to regime changes...
+adf.test(diff(yt.ex5[,1]), k = 1)
+adf.test(diff(yt.ex5[,2]), k = 1)
+adf.test(diff(yt.ex5[,3]), k = 1)
+
+## confirm VAR order  
+p.ex5 <- VARselect(yt.ex5)
+p.ex5$selection
+
+## trace and eigenvalue statistic using urca -> ca.jo() 
+ex5.eigen.stat <- ca.jo(yt.ex5, type = "eigen", ecdet = "none", K = 2, 
+                        spec = "transitory")
+summary(ex5.eigen.stat)
+
+ex5.trace.stat <- ca.jo(yt.ex5, type = "trace", ecdet = "none", K = 2, 
+                        spec = "transitory")
+summary(ex5.trace.stat)
+```
+
+With extremely sharp regime switching, trace and eigenvalue tests fail to detect cointegration. 
+
+```{r, EXAMPLE 5 COINTEGRATION CHECK PART 2}
+## cointegration test with rolling windows 
+window.min.max <- function(num.index, win.length, roll.length) {
+  init.val <- (num.index - win.length) / roll.length
+  window.hold <- floor(win.length / roll.length) - 1
+  min.window <- floor(init.val) + 1
+  max.window <- min.window + window.hold
+  list(min.window, max.window)
+}
+
+win.len = 100; roll.len = 5
+
+## data cleaning for windowing
+yt.ex5.window <- yt.ex5 %>% 
+  as.data.frame() %>%
+  mutate(num.index = 0:(n-1)) %>% 
+  mutate(window.min = window.min.max(num.index, win.len, roll.len)[[1]], 
+         window.max = window.min.max(num.index, win.len, roll.len)[[2]])
+
+roll.window <- function(data) {
+  max.window <- max(data$window.max)
+  cr.vec <- rep(NA, max.window); counter <- 0
+  
+  for (i in 0:(max.window-2)) {
+    temp.dat <- data %>% filter(window.min <= i & window.max >= i)
+    temp.eig <- ca.jo(temp.dat[,1:3], K = 2,type = "eigen", ecdet = "none", 
+                      spec = "transitory")
+    if (counter == 0) {cval <- temp.eig@cval[,2]; counter <- 1}
+    test.stat <- temp.eig@teststat
+    coint.rank <- sum(test.stat > cval)
+    cr.vec[i] <- coint.rank
+  }
+  cr.vec
+}
+
+coint.rank <- roll.window(yt.ex5.window)
+index.min <- seq(1, 595, by = 5)
+index.max <- seq(101, 695, by = 5)
+cr.ind <- cbind(coint.rank, index.min, index.max)
+data.frame(cr.ind)
+```
+
+Cointegration rank seems extremely sensitive -- overlapping with the shifting regime in any capacity derails cointegration and leads to cointegration rank zero (albeit regime shift is extremely sharp, which likely breaks relation down very quickly). Accurate cointegration rank testing only possible if we know what regime we're actually in. 
+
+```{r, EXAMPLE 5 EIGEN ANGLES, fig.align="center", out.width="50%"}
+## calculate changing angle between cointegration vector across roll windows 
+angle <- function(v1, v2) {
+  theta <- acos(sum(v1*v2) / (norm(v1, type = "2")*norm(v2, type = "2")))
+  theta
+}
+
+## angle calculation holding cointegration rank static at 1 
+roll.angle.1 <- function(data, c.rank = 1) {
+  max.window <- max(data$window.max) 
+  angle.vec <- rep(NA, max.window)
+  
+  init.dat <- data %>% filter(window.min <= 0 & window.max >= 0)
+  init.vecm <- VECM(init.dat[,1:3], r = c.rank, lag = 1, estim = "ML", include = "const")
+  prev.beta <- coefB(init.vecm)
+  
+  for (i in 1:(max.window-2)) {
+    temp.dat <- data %>% filter(window.min <= i & window.max >= i)
+    temp.vecm <- VECM(temp.dat[,1:3], r = c.rank, 
+                          lag = 1, estim = "ML", include = "const")
+    temp.beta <- coefB(temp.vecm)
+    temp.angle <- angle(temp.beta, prev.beta)
+    angle.vec[i] <- temp.angle
+    prev.beta <- temp.beta
+  }
+  angle.vec 
+}
+
+## angle calculation with cointegration rank 2; use projection for selection 
+proj.min.2d <- function(v1, v2, w1, w2) {
+  pairs <- list(cbind(v1,w1), cbind(v1,w2), cbind(v2,w1), cbind(v2,w2))
+  curr.min <- 1e6
+  pair.min <- NA
+  for (pair in pairs) {
+    temp.len <- sum(pair[,1]*pair[,2]) / norm(pair[,2], type = "2")
+    if (temp.len < curr.min) {
+      pair.min <- pair
+    }
+  }
+  pair.min 
+}
+
+roll.angle.2 <- function(data, c.rank = 2) {
+  max.window <- max(data$window.max) 
+  angle.vec <- rep(NA, max.window)
+  
+  init.dat <- data %>% filter(window.min <= 0 & window.max >= 0)
+  init.vecm <- VECM(init.dat[,1:3], r = c.rank, lag = 1, estim = "ML", include = "const")
+  prev.beta <- coefB(init.vecm)
+  
+  for (i in 1:(max.window-2)) {
+    temp.dat <- data %>% filter(window.min <= i & window.max >= i)
+    temp.vecm <- VECM(temp.dat[,1:3], r = c.rank, 
+                          lag = 1, estim = "ML", include = "const")
+    temp.beta <- coefB(temp.vecm)
+    proj.pair <- proj.min.2d(temp.beta[,1], temp.beta[,2], 
+                             prev.beta[,1], prev.beta[,2])
+    temp.angle <- angle(proj.pair[,1], proj.pair[,2])
+    angle.vec[i] <- temp.angle
+    prev.beta <- temp.beta
+  }
+  angle.vec 
+}
+
+angle.r1 <- roll.angle.1(yt.ex5.window, 1)
+angle.r2 <- roll.angle.2(yt.ex5.window, 2)
+
+par(mfrow=c(1,2))
+ts.plot(na.omit(angle.r1), main = "Angle Between CI Basis: Rank 1", 
+        xlab = "Window", ylab = "Angle (degrees)")
+ts.plot(na.omit(angle.r2), main = "Angle Between CI Basis: Rank 2", 
+        xlab = "Window", ylab = "Angle (degrees)")
+```
+
+Clear separation in angle measurements when holding rank 1 cointegration constant; difficult to establish clear separation of regimes via angle measures when holding rank 2 cointegration constant. 
+
+```{r, EXAMPLE 6 / EXTENDED EX 5 EIGEN ANGLES KNOWN REGIMES}
+## check angle measures in cointegration without regime switching: example 3
+n <- length(yt.ex3[,1])
+
+yt.ex3.window <- yt.ex3 %>% 
+  as.data.frame() %>%
+  mutate(num.index = 0:(n-1)) %>% 
+  mutate(window.min = window.min.max(num.index, win.len, roll.len)[[1]], 
+         window.max = window.min.max(num.index, win.len, roll.len)[[2]])
+
+ex3.angle.1 <- roll.angle.1(yt.ex3.window)
+ex3.angle.2 <- roll.angle.2(yt.ex3.window)
+
+par(mfrow=c(1,2))
+ts.plot(ex3.angle.1, main = "EX3 Angles, CI Rank 1", 
+        xlab = "Window", ylab = "Angle (degrees)")
+ts.plot(ex3.angle.2, main = "EX3 Angles, CI Rank 2", 
+        xlab = "Window", ylab = "Angle (degrees)")
+## check angle measures in cointegration without regime switching: example 4
+n <- length(yt.ex4[,1])
+
+yt.ex4.window <- yt.ex4 %>% 
+  as.data.frame() %>%
+  mutate(num.index = 0:(n-1)) %>% 
+  mutate(window.min = window.min.max(num.index, win.len, roll.len)[[1]], 
+         window.max = window.min.max(num.index, win.len, roll.len)[[2]])
+
+ex4.angle.1 <- roll.angle.1(yt.ex4.window)
+ex4.angle.2 <- roll.angle.2(yt.ex4.window)
+par(mfrow=c(1,2))
+ts.plot(ex4.angle.1, main = "EX3 Angles, CI Rank 1", 
+        xlab = "Window", ylab = "Angle (degrees)")
+ts.plot(ex4.angle.2, main = "EX3 Angles, CI Rank 2", 
+        xlab = "Window", ylab = "Angle (degrees)")
+```
+
+```{r, EXAMPLE 6 VERIFICATION}
+## verify roll.window() accurately assesses cointegration rank for EX3, EX4
+(ex3.windowed.cr <- roll.window(yt.ex3.window))
+ex3.prop <- sum(na.omit(ex3.windowed.cr) == 1) / length(na.omit(ex3.windowed.cr))
+  
+(ex4.windowed.cr <- roll.window(yt.ex4.window))
+ex4.prop <- sum(na.omit(ex4.windowed.cr) == 2) / length(na.omit(ex4.windowed.cr))
+
+ex3.prop; ex4.prop
+```
+
+Example 3 and example 4 cointegration rank correctly determined by 91.75% and 95.88% (respectively) of all rolling windows.
