@@ -40,7 +40,7 @@ colnames(yt.ex1) <- c("y1", "y2", "y3")
 
 ts.plot(yt.ex1, lty = c(1:d), main="3-Dimensional I(1) Series Without Cointegration", 
         col = rainbow(d))
-legend(20, -10, c("y1","y2", "y3"), lty=c(1:d), col = rainbow(d))
+legend(0, -10, c("y1","y2", "y3"), lty=c(1:d), col = rainbow(d))
 ```
 
 ```{r, EXAMPLE 1 COINTEGRATION CHECK}
@@ -102,6 +102,7 @@ yt.ex2 <- cbind(yt.ex2.1, yt.ex2.2)
 linecolors <- viridis(20)[c(5,15)]
 ts.plot(yt.ex2, lty = c(1:d), main = "Bivariate VAR(p) Time Series", 
         col = linecolors)
+legend(0, -10, c("y1","y2"), lty=c(1:d), col = linecolors)
 ```
 
 ```{r, EXAMPLE 2 COINTEGRATION CHECK}
@@ -235,7 +236,7 @@ yt.ex4 <- cbind(yt.ex4.1, yt.ex4.2, yt.ex4.3)
 ts.plot(yt.ex4, lty = c(1:d), 
         main = "Trivariate VAR(p): Cointegrated Rank 2", 
         col = rainbow(d))
-legend(0, -20, c("y1","y2", "y3"), lty=c(1:3), col = rainbow(d))
+legend(0, -10, c("y1","y2", "y3"), lty=c(1:3), col = rainbow(d))
 ```
 
 ```{r, EXAMPLE 4 COINTEGRATION CHECK}
@@ -509,9 +510,9 @@ yt.ex4.window <- yt.ex4 %>%
 ex4.angle.1 <- roll.angle.1(yt.ex4.window)
 ex4.angle.2 <- roll.angle.2(yt.ex4.window)
 par(mfrow=c(1,2))
-ts.plot(ex4.angle.1, main = "EX3 Angles, CI Rank 1", 
+ts.plot(ex4.angle.1, main = "EX4 Angles, CI Rank 1", 
         xlab = "Window", ylab = "Angle (degrees)")
-ts.plot(ex4.angle.2, main = "EX3 Angles, CI Rank 2", 
+ts.plot(ex4.angle.2, main = "EX4 Angles, CI Rank 2", 
         xlab = "Window", ylab = "Angle (degrees)")
 ```
 
