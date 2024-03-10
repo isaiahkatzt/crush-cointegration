@@ -361,7 +361,7 @@ summary(ex5.trace.stat)
 With extremely sharp regime switching, trace and eigenvalue tests fail to detect cointegration. 
 
 ```{r, EXAMPLE 5 COINTEGRATION CHECK PART 2}
-## cointegration test with rolling windows 
+## rolling window helper function  
 window.min.max <- function(num.index, win.length, roll.length) {
   init.val <- (num.index - win.length) / roll.length
   window.hold <- floor(win.length / roll.length) - 1
@@ -390,7 +390,7 @@ roll.window <- function(data) {
     if (counter == 0) {cval <- temp.eig@cval[,2]; counter <- 1}
     test.stat <- temp.eig@teststat
     coint.rank <- sum(test.stat > cval)
-    cr.vec[i] <- coint.rank
+    cr.vec[i+1] <- coint.rank
   }
   cr.vec
 }
@@ -478,7 +478,7 @@ ts.plot(na.omit(angle.r2), main = "Angle Between CI Basis: Rank 2",
         xlab = "Window", ylab = "Angle (degrees)")
 ```
 
-Clear separation in angle measurements when holding rank 1 cointegration constant; difficult to establish clear separation of regimes via angle measures when holding rank 2 cointegration constant. 
+Clear separation in angle measurement regions when holding rank 1 cointegration constant; difficult to establish clear separation of regimes via angle measures when holding rank 2 cointegration constant. 
 
 ```{r, EXAMPLE 6 / EXTENDED EX 5 EIGEN ANGLES KNOWN REGIMES}
 ## check angle measures in cointegration without regime switching: example 3
@@ -527,4 +527,4 @@ ex4.prop <- sum(na.omit(ex4.windowed.cr) == 2) / length(na.omit(ex4.windowed.cr)
 ex3.prop; ex4.prop
 ```
 
-Example 3 and example 4 cointegration rank correctly determined by 91.75% and 95.88% (respectively) of all rolling windows.
+Example 3 and example 4 cointegration rank correctly determined by 88.78% and 94.90% of tests. 

@@ -1,0 +1,566 @@
+---
+title: "PSTAT 277B: Soybean Crush Data"
+author: "Isaiah Katz"
+date: "Winter 2024"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, warning=F, message=F}
+library(tidyverse)
+library(urca)
+library(tsDyn)
+library(vars)
+library(tseries)
+
+library(MASS)
+library(purrr)
+library(readr)
+library(anytime)
+library(viridis)
+library(grid)
+library(gridExtra)
+
+```
+
+### PART 1: DATA CLEANING 
+```{r, DATA READING AND CLEANING, fig.align = "center", out.width = "60%"}
+# raw data read -- daily increments
+zm <- read.csv("ProjectData/ZM-12YR-DAILY.csv")
+zl <- read.csv("ProjectData/ZL-12YR-DAILY.csv")
+zs <- read.csv("ProjectData/ZS-12YR-DAILY.csv")
+
+zm.dt <- zm %>% mutate("datetime" = anytime(time)) %>% dplyr::select(close, datetime)
+zl.dt <- zl %>% mutate("datetime" = anytime(time)) %>% dplyr::select(close, datetime)
+zs.dt <- zs %>% mutate("datetime" = anytime(time)) %>% dplyr::select(close, datetime)
+
+# data cleaning check 
+sum(zl.dt$datetime != zs.dt$datetime)
+sum(zm.dt$datetime != zl.dt$datetime)
+
+crush.dat <- data.frame(cbind(zs.dt$datetime, zs.dt$close, zl.dt$close, zm.dt$close))
+colnames(crush.dat) <- c("dt", "ZS", "ZL", "ZM")
+
+ts.plot(cbind(zs.dt$close, zm.dt$close*2.2, zl.dt$close*11), 
+        main = "Soybean, soymeal, and soyoil futures prices (scaled by trading weights)", 
+        lty = c(1:3), col = rainbow(3))
+legend("bottomright", legend = c("Soybean", "Soymeal * 2.2", "Soyoil * 11"), 
+       col = rainbow(3), lty = 1:3, cex = 0.8, bg = "white")
+
+ts.plot(crush.dat$ZS, main = "Soybean front month future prices", ylab = "Price")
+ts.plot(crush.dat$ZL, main = "Soyoil front month future prices",  ylab = "Price")
+ts.plot(crush.dat$ZM, main = "Soymeal front month future prices", ylab = "Price")
+```
+
+```{r, FORWARD CURVE RECONSTRUCTION}
+## raw data read -- futures months F,H,K,N,Q,U,X   
+file.list <- list.files(path = "ProjectData/curve-reconstruct", 
+                        pattern = ".csv", full.names = TRUE)
+curve.data <- setNames(map(file.list, read_csv, show_col_types = FALSE), 
+                       basename(file.list))
+
+## data cleaning  
+merge.lists <- list()
+contract.months <- c("f", "h", "k", "n", "q", "u", "x")
+
+for (prefix in contract.months) {
+  merge.lists[[paste0("merge.list.", prefix)]] <- list()
+}
+
+for (i in 13:24) {
+  f.merge <- list(curve.data[[paste0("ZSF", i, ".csv")]], 
+                  curve.data[[paste0("ZSN", i, ".csv")]], 
+                  curve.data[[paste0("ZSF", i + 1, ".csv")]])
+  merge.lists$merge.list.f[[paste0("f", i, ".merge")]] <- f.merge
+  
+  h.merge <- list(curve.data[[paste0("ZSH", i, ".csv")]], 
+                  curve.data[[paste0("ZSU", i, ".csv")]], 
+                  curve.data[[paste0("ZSH", i + 1, ".csv")]])
+  merge.lists$merge.list.h[[paste0("h", i, ".merge")]] <- h.merge
+}
+
+for (i in 12:23) {
+  k.merge <- list(curve.data[[paste0("ZSK", i, ".csv")]], 
+                  curve.data[[paste0("ZSX", i, ".csv")]], 
+                  curve.data[[paste0("ZSK", i + 1, ".csv")]])
+  merge.lists$merge.list.k[[paste0("k", i, ".merge")]] <- k.merge
+  
+  n.merge <- list(curve.data[[paste0("ZSN", i, ".csv")]], 
+                  curve.data[[paste0("ZSF", i + 1, ".csv")]], 
+                  curve.data[[paste0("ZSN", i + 1, ".csv")]])
+  merge.lists$merge.list.n[[paste0("n", i, ".merge")]] <- n.merge
+  
+  q.merge <- list(curve.data[[paste0("ZSQ", i, ".csv")]], 
+                  curve.data[[paste0("ZSH", i + 1, ".csv")]], 
+                  curve.data[[paste0("ZSQ", i + 1, ".csv")]])
+  merge.lists$merge.list.q[[paste0("q", i, ".merge")]] <- q.merge
+  
+  u.merge <- list(curve.data[[paste0("ZSU", i, ".csv")]], 
+                  curve.data[[paste0("ZSH", i + 1, ".csv")]], 
+                  curve.data[[paste0("ZSU", i + 1, ".csv")]])
+  merge.lists$merge.list.u[[paste0("u", i, ".merge")]] <- u.merge
+  
+  x.merge <- list(curve.data[[paste0("ZSX", i, ".csv")]], 
+                  curve.data[[paste0("ZSK", i + 1, ".csv")]], 
+                  curve.data[[paste0("ZSX", i + 1, ".csv")]])
+  merge.lists$merge.list.x[[paste0("x", i, ".merge")]] <- x.merge
+}
+
+curve.lists <- list()
+for (prefix in contract.months) {
+  curve.lists[[paste0("curve.list.", prefix)]] <- list()
+}
+
+merge.drop <- function(merge.list) {
+  lapply(merge.list, function(data) 
+    drop_na(Reduce(function(x, y) merge(x, y, by = "time"), data)))
+}
+
+for (contract in contract.months) {
+  curve.lists[[paste0("curve.list.", contract)]] <-
+    merge.drop(merge.lists[[paste0("merge.list.", contract)]])
+}
+
+cal.split <- function(data) {
+  data %>% 
+    mutate(six.mo = close.x - close.y, year = close.x - close) %>%
+    dplyr::select(time, six.mo, year)
+}
+
+## contracts K12 - H13 
+k12.data <- cal.split(curve.lists$curve.list.k$k12.merge) %>%
+  filter(anydate(time) < as.Date("2012-04-01"))
+n12.data <- cal.split(curve.lists$curve.list.n$n12.merge) %>%
+  filter(anydate(time) >= as.Date("2012-04-01") & anydate(time) < as.Date("2012-06-01"))
+u12.data <- cal.split(curve.lists$curve.list.u$u12.merge) %>% 
+  filter(anydate(time) >= as.Date("2012-06-01") & anydate(time) < as.Date("2012-08-01"))
+x12.data <- cal.split(curve.lists$curve.list.x$x12.merge) %>%
+  filter(anydate(time) >= as.Date("2012-08-01") & anydate(time) < as.Date("2012-10-01"))
+f13.data <- cal.split(curve.lists$curve.list.f$f13.merge) %>% 
+  filter(anydate(time) >= as.Date("2012-10-01") & anydate(time) < as.Date("2012-12-01"))
+h13.data <- cal.split(curve.lists$curve.list.h$h13.merge) %>%
+  filter(anydate(time) >= as.Date("2012-12-01") & anydate(time) < as.Date("2013-02-01"))
+cal12.13 <- rbind(k12.data, n12.data, u12.data, x12.data, f13.data, h13.data)
+
+## contracts K13 - H14
+k13.data <- cal.split(curve.lists$curve.list.k$k13.merge) %>% 
+  filter(anydate(time) >= as.Date("2013-02-01") & anydate(time) < as.Date("2013-04-01"))
+n13.data <- cal.split(curve.lists$curve.list.n$n13.merge) %>%
+  filter(anydate(time) >= as.Date("2013-04-01") & anydate(time) < as.Date("2013-06-01"))
+u13.data <- cal.split(curve.lists$curve.list.u$u13.merge) %>%
+  filter(anydate(time) >= as.Date("2013-06-01") & anydate(time) < as.Date("2013-08-01"))
+x13.data <- cal.split(curve.lists$curve.list.x$x13.merge) %>%
+  filter(anydate(time) >= as.Date("2013-08-01") & anydate(time) < as.Date("2013-10-01"))
+f14.data <- cal.split(curve.lists$curve.list.f$f14.merge) %>%
+  filter(anydate(time) >= as.Date("2013-10-01") & anydate(time) < as.Date("2013-12-01"))
+h14.data <- cal.split(curve.lists$curve.list.h$h14.merge) %>%
+  filter(anydate(time) >= as.Date("2013-12-01") & anydate(time) < as.Date("2014-02-01"))
+cal13.14 <- rbind(k13.data, n13.data, u13.data, x13.data, f14.data, h14.data)
+
+## contracts K14 - H15
+k14.data <- cal.split(curve.lists$curve.list.k$k14.merge) %>%
+  filter(anydate(time) >= as.Date("2014-02-01") & anydate(time) < as.Date("2014-04-01"))
+n14.data <- cal.split(curve.lists$curve.list.n$n14.merge) %>%
+  filter(anydate(time) >= as.Date("2014-04-01") & anydate(time) < as.Date("2014-06-01"))
+u14.data <- cal.split(curve.lists$curve.list.u$u14.merge) %>%
+  filter(anydate(time) >= as.Date("2014-06-01") & anydate(time) < as.Date("2014-08-01"))
+x14.data <- cal.split(curve.lists$curve.list.x$x14.merge) %>%
+  filter(anydate(time) >= as.Date("2014-08-01") & anydate(time) < as.Date("2014-10-01"))
+f15.data <- cal.split(curve.lists$curve.list.f$f15.merge) %>%
+  filter(anydate(time) >= as.Date("2014-10-01") & anydate(time) < as.Date("2014-12-01"))
+h15.data <- cal.split(curve.lists$curve.list.h$h15.merge) %>%
+  filter(anydate(time) >= as.Date("2014-12-01") & anydate(time) < as.Date("2015-02-01"))
+cal14.15 <- rbind(k14.data, n14.data, u14.data, x14.data, f15.data, h15.data)
+
+## contracts K15 - H16
+k15.data <- cal.split(curve.lists$curve.list.k$k15.merge) %>% 
+  filter(anydate(time) >= as.Date("2015-02-01") & anydate(time) < as.Date("2015-04-01"))
+n15.data <- cal.split(curve.lists$curve.list.n$n15.merge) %>%
+  filter(anydate(time) >= as.Date("2015-04-01") & anydate(time) < as.Date("2015-06-01"))
+u15.data <- cal.split(curve.lists$curve.list.u$u15.merge) %>%
+  filter(anydate(time) >= as.Date("2015-06-01") & anydate(time) < as.Date("2015-08-01"))
+x15.data <- cal.split(curve.lists$curve.list.x$x15.merge) %>%
+  filter(anydate(time) >= as.Date("2015-08-01") & anydate(time) < as.Date("2015-10-01"))
+f16.data <- cal.split(curve.lists$curve.list.f$f16.merge) %>%
+  filter(anydate(time) >= as.Date("2015-10-01") & anydate(time) < as.Date("2015-12-01"))
+h16.data <- cal.split(curve.lists$curve.list.h$h16.merge) %>%
+  filter(anydate(time) >= as.Date("2015-12-01") & anydate(time) < as.Date("2016-02-01"))
+cal15.16 <- rbind(k15.data, n15.data, u15.data, x15.data, f16.data, h16.data)
+
+## contracts K16 - H17
+k16.data <- cal.split(curve.lists$curve.list.k$k16.merge) %>%
+  filter(anydate(time) >= as.Date("2016-02-01") & anydate(time) < as.Date("2016-04-01"))
+n16.data <- cal.split(curve.lists$curve.list.n$n16.merge) %>%
+  filter(anydate(time) >= as.Date("2016-04-01") & anydate(time) < as.Date("2016-06-01"))
+u16.data <- cal.split(curve.lists$curve.list.u$u16.merge) %>%
+  filter(anydate(time) >= as.Date("2016-06-01") & anydate(time) < as.Date("2016-08-01"))
+x16.data <- cal.split(curve.lists$curve.list.x$x16.merge) %>%
+  filter(anydate(time) >= as.Date("2016-08-01") & anydate(time) < as.Date("2016-10-01"))
+f17.data <- cal.split(curve.lists$curve.list.f$f17.merge) %>% 
+  filter(anydate(time) >= as.Date("2016-10-01") & anydate(time) < as.Date("2016-12-01"))
+h17.data <- cal.split(curve.lists$curve.list.h$h17.merge) %>%
+  filter(anydate(time) >= as.Date("2016-12-01") & anydate(time) < as.Date("2017-02-01"))
+cal16.17 <- rbind(k16.data, n16.data, u16.data, x16.data, f17.data, h17.data)
+
+## contracts K17 - H18
+k17.data <- cal.split(curve.lists$curve.list.k$k17.merge) %>%
+  filter(anydate(time) >= as.Date("2017-02-01") & anydate(time) < as.Date("2017-04-01"))
+n17.data <- cal.split(curve.lists$curve.list.n$n17.merge) %>%
+  filter(anydate(time) >= as.Date("2017-04-01") & anydate(time) < as.Date("2017-06-01"))
+u17.data <- cal.split(curve.lists$curve.list.u$u17.merge) %>%
+  filter(anydate(time) >= as.Date("2017-06-01") & anydate(time) < as.Date("2017-08-01"))
+x17.data <- cal.split(curve.lists$curve.list.x$x17.merge) %>%
+  filter(anydate(time) >= as.Date("2017-08-01") & anydate(time) < as.Date("2017-10-01"))
+f18.data <- cal.split(curve.lists$curve.list.f$f18.merge) %>%
+  filter(anydate(time) >= as.Date("2017-10-01") & anydate(time) < as.Date("2017-12-01"))
+h18.data <- cal.split(curve.lists$curve.list.h$h18.merge) %>%
+  filter(anydate(time) >= as.Date("2017-12-01") & anydate(time) < as.Date("2018-02-01"))
+cal17.18 <- rbind(k17.data, n17.data, u17.data, x17.data, f18.data, h18.data)
+
+## contracts K18 - H19
+k18.data <- cal.split(curve.lists$curve.list.k$k18.merge) %>%
+  filter(anydate(time) >= as.Date("2018-02-01") & anydate(time) < as.Date("2018-04-01"))
+n18.data <- cal.split(curve.lists$curve.list.n$n18.merge) %>%
+  filter(anydate(time) >= as.Date("2018-04-01") & anydate(time) < as.Date("2018-06-01"))
+u18.data <- cal.split(curve.lists$curve.list.u$u18.merge) %>%
+  filter(anydate(time) >= as.Date("2018-06-01") & anydate(time) < as.Date("2018-08-01"))
+x18.data <- cal.split(curve.lists$curve.list.x$x18.merge) %>%
+  filter(anydate(time) >= as.Date("2018-08-01") & anydate(time) < as.Date("2018-10-01"))
+f19.data <- cal.split(curve.lists$curve.list.f$f19.merge) %>%
+  filter(anydate(time) >= as.Date("2018-10-01") & anydate(time) < as.Date("2018-12-01"))
+h19.data <- cal.split(curve.lists$curve.list.h$h19.merge) %>%
+  filter(anydate(time) >= as.Date("2018-12-01") & anydate(time) < as.Date("2019-02-01"))
+cal18.19 <- rbind(k18.data, n18.data, u18.data, x18.data, f19.data, h19.data)
+
+## contracts K19 - H20
+k19.data <- cal.split(curve.lists$curve.list.k$k19.merge) %>%
+  filter(anydate(time) >= as.Date("2019-02-01") & anydate(time) < as.Date("2019-04-01"))
+n19.data <- cal.split(curve.lists$curve.list.n$n19.merge) %>%
+  filter(anydate(time) >= as.Date("2019-04-01") & anydate(time) < as.Date("2019-06-01"))
+u19.data <- cal.split(curve.lists$curve.list.u$u19.merge) %>%
+  filter(anydate(time) >= as.Date("2019-06-01") & anydate(time) < as.Date("2019-08-01"))
+x19.data <- cal.split(curve.lists$curve.list.x$x19.merge) %>%
+  filter(anydate(time) >= as.Date("2019-08-01") & anydate(time) < as.Date("2019-10-01"))
+f20.data <- cal.split(curve.lists$curve.list.f$f20.merge) %>%
+  filter(anydate(time) >= as.Date("2019-10-01") & anydate(time) < as.Date("2019-12-01"))
+h20.data <- cal.split(curve.lists$curve.list.h$h20.merge) %>%
+  filter(anydate(time) >= as.Date("2019-12-01") & anydate(time) < as.Date("2020-02-01"))
+cal19.20 <- rbind(k19.data, n19.data, u19.data, x19.data, f20.data, h20.data)
+
+## contracts K20- H21
+k20.data <- cal.split(curve.lists$curve.list.k$k20.merge) %>%
+  filter(anydate(time) >= as.Date("2020-02-01") & anydate(time) < as.Date("2020-04-01"))
+n20.data <- cal.split(curve.lists$curve.list.n$n20.merge) %>%
+  filter(anydate(time) >= as.Date("2020-04-01") & anydate(time) < as.Date("2020-06-01"))
+u20.data <- cal.split(curve.lists$curve.list.u$u20.merge) %>%
+  filter(anydate(time) >= as.Date("2020-06-01") & anydate(time) < as.Date("2020-08-01"))
+x20.data <- cal.split(curve.lists$curve.list.x$x20.merge) %>%
+  filter(anydate(time) >= as.Date("2020-08-01") & anydate(time) < as.Date("2020-10-01"))
+f21.data <- cal.split(curve.lists$curve.list.f$f21.merge) %>%
+  filter(anydate(time) >= as.Date("2020-10-01") & anydate(time) < as.Date("2020-12-01"))
+h21.data <- cal.split(curve.lists$curve.list.h$h21.merge) %>%
+  filter(anydate(time) >= as.Date("2020-12-01") & anydate(time) < as.Date("2021-02-01"))
+cal20.21<- rbind(k20.data, n20.data, u20.data, x20.data, f21.data, h21.data)
+
+## contracts K21- H22
+k21.data <- cal.split(curve.lists$curve.list.k$k21.merge) %>%
+  filter(anydate(time) >= as.Date("2021-02-01") & anydate(time) < as.Date("2021-04-01"))
+n21.data <- cal.split(curve.lists$curve.list.n$n21.merge) %>%
+  filter(anydate(time) >= as.Date("2021-04-01") & anydate(time) < as.Date("2021-06-01"))
+u21.data <- cal.split(curve.lists$curve.list.u$u21.merge) %>%
+  filter(anydate(time) >= as.Date("2021-06-01") & anydate(time) < as.Date("2021-08-01"))
+x21.data <- cal.split(curve.lists$curve.list.x$x21.merge) %>%
+  filter(anydate(time) >= as.Date("2021-08-01") & anydate(time) < as.Date("2021-10-01"))
+f22.data <- cal.split(curve.lists$curve.list.f$f22.merge) %>%
+  filter(anydate(time) >= as.Date("2021-10-01") & anydate(time) < as.Date("2021-12-01"))
+h22.data <- cal.split(curve.lists$curve.list.h$h22.merge) %>%
+  filter(anydate(time) >= as.Date("2021-12-01") & anydate(time) < as.Date("2022-02-01"))
+cal21.22 <- rbind(k21.data, n21.data, u21.data, x21.data, f22.data, h22.data)
+
+## contracts K22- H23
+k22.data <- cal.split(curve.lists$curve.list.k$k22.merge) %>%
+  filter(anydate(time) >= as.Date("2022-02-01") & anydate(time) < as.Date("2022-04-01"))
+n22.data <- cal.split(curve.lists$curve.list.n$n22.merge) %>%
+  filter(anydate(time) >= as.Date("2022-04-01") & anydate(time) < as.Date("2022-06-01"))
+u22.data <- cal.split(curve.lists$curve.list.u$u22.merge) %>%
+  filter(anydate(time) >= as.Date("2022-06-01") & anydate(time) < as.Date("2022-08-01"))
+x22.data <- cal.split(curve.lists$curve.list.x$x22.merge) %>%
+  filter(anydate(time) >= as.Date("2022-08-01") & anydate(time) < as.Date("2022-10-01"))
+f23.data <- cal.split(curve.lists$curve.list.f$f23.merge) %>%
+  filter(anydate(time) >= as.Date("2022-10-01") & anydate(time) < as.Date("2022-12-01"))
+h23.data <- cal.split(curve.lists$curve.list.h$h23.merge) %>%
+  filter(anydate(time) >= as.Date("2022-12-01") & anydate(time) < as.Date("2023-02-01"))
+cal22.23 <- rbind(k22.data, n22.data, u22.data, x22.data, f23.data, h23.data)
+
+## contracts K23 - H24 (note: back contracts here have minimal volume) 
+k23.data <- cal.split(curve.lists$curve.list.k$k23.merge) %>%
+  filter(anydate(time) >= as.Date("2023-02-01") & anydate(time) < as.Date("2023-04-01"))
+n23.data <- cal.split(curve.lists$curve.list.n$n23.merge) %>%
+  filter(anydate(time) >= as.Date("2023-04-01") & anydate(time) < as.Date("2023-06-01"))
+u23.data <- cal.split(curve.lists$curve.list.u$u23.merge) %>%
+  filter(anydate(time) >= as.Date("2023-06-01") & anydate(time) < as.Date("2023-08-01"))
+x23.data <- cal.split(curve.lists$curve.list.x$x23.merge) %>%
+  filter(anydate(time) >= as.Date("2023-08-01") & anydate(time) < as.Date("2023-10-01"))
+f24.data <- cal.split(curve.lists$curve.list.f$f24.merge) %>%
+  filter(anydate(time) >= as.Date("2023-10-01") & anydate(time) < as.Date("2023-12-01"))
+h24.data <- cal.split(curve.lists$curve.list.h$h24.merge) %>%
+  filter(anydate(time) >= as.Date("2023-12-01") & anydate(time) < as.Date("2024-02-01"))
+cal23.24 <- rbind(k23.data, n23.data, u23.data, x23.data, f24.data, h24.data)
+
+
+full.curve <- rbind(cal12.13, cal13.14, cal14.15, cal15.16, cal16.17, 
+                    cal17.18, cal18.19, cal20.21, cal21.22, cal22.23, cal23.24)
+ts.plot(full.curve[,2:3], col = viridis(20)[c(5,15)], 
+        main = "6-Month and 12-Month Short Calendar Spread", 
+        xlab = "Time", ylab = "Price")
+abline(h = 0, col = "red", lty = 2)
+legend(2000,400, c("6MO", "12MO"), lty = c(1,1), col = viridis(20)[c(5,15)])
+```
+
+### PART 2: JOHANSEN TEST AND FULL COINTEGRATION  
+
+```{r, PART 2 JOHANSEN TEST FULL DATASET}
+## naive VAR fit for full dataset
+full.crush.lag <- VARselect(crush.dat[,2:4], lag.max = 9, type = "none")
+full.crush.lag$selection 
+
+## unit root checks in ZS, ZL, ZM series 
+zs.unit.stat <- summary(ur.df(crush.dat$ZS, type = "drift", selectlags = "AIC"))
+zl.unit.stat <- summary(ur.df(crush.dat$ZL, type = "drift", selectlags = "AIC"))
+zm.unit.stat <- summary(ur.df(crush.dat$ZM, type = "drift", selectlags = "AIC"))
+comp.stat <- zs.unit.stat@cval[3]
+zs.unit.stat@teststat[1] < comp.stat
+zl.unit.stat@teststat[1] < comp.stat
+zm.unit.stat@teststat[1] < comp.stat
+
+## verify ZS, ZL, ZM are I(1) 
+zs.diff.stat <- summary(ur.df(diff(crush.dat$ZS), type = "drift", selectlags = "AIC"))
+zl.diff.stat <- summary(ur.df(diff(crush.dat$ZL), type = "drift", selectlags = "AIC"))
+zm.diff.stat <- summary(ur.df(diff(crush.dat$ZM), type = "drift", selectlags = "AIC"))
+comp.stat.1 <- zs.diff.stat@cval[1]
+zs.diff.stat@teststat[1] < comp.stat.1
+zl.diff.stat@teststat[1] < comp.stat.1
+zm.diff.stat@teststat[1] < comp.stat.1
+
+## trace and eigenvalue statistics; both suggest rank 1 cointegration
+full.eigenstat <- ca.jo(crush.dat[,2:4], type = "eigen", ecdet = "none", 
+                        K = 5, spec = "transitory")
+summary(full.eigenstat)
+full.tracestat <- ca.jo(crush.dat[,2:4], type = "trace", ecdet = "none", 
+                        K = 5, spec = "transitory")
+summary(full.tracestat)
+
+## fitted as VECM  
+full.vecm <- VECM(crush.dat[,2:4], r = 1, lag = 4,include = "const", 
+                  estim = "ML", LRinclude = "none")
+```
+
+Maximum eigenvalue and trace statistics suggest cointegration rank 1. Note this result assumes cointegration remains constant over the entire timeframe considered. 
+
+```{r, FULL TIMEFRAME JOHANSEN TEST RESULT ANALYSIS, fig.align="center", out.width="50%"}
+## coefficient collection 
+summary(full.vecm)
+full.beta <- coefB(full.vecm)
+full.alpha <- coefA(full.vecm)
+full.zt <- crush.dat$ZS*full.beta[1] + crush.dat$ZL*full.beta[2] +
+  crush.dat$ZM*full.beta[3]
+ts.plot(full.zt, main = "Potentially stationary combination of crush pieces ", 
+        xlab = "Time", ylab = "Value")
+
+ur.df(full.zt, type = "drift", selectlags = "AIC")
+```
+
+ADF test suggests stationarity in $z_t = \beta y_t$ process. Next we consider time-varying cointegration. 
+
+```{r, PART 3 ROLLING WINDOW}
+## construct 90 day intervals 
+dt.split <- data.frame(as.Date(anydate(crush.dat$dt)))
+colnames(dt.split) <- c("date")
+dt.split <- dt.split %>% mutate(diff = as.numeric(date - lag(date)))
+dt.split$diff[1] <- 0
+
+dt.window <- dt.split %>% mutate(num.index = cumsum(diff))
+
+## sliding window function 
+window.min.max <- function(num.index, win.length, roll.length) {
+  init.val <- (num.index - win.length) / roll.length
+  window.hold <- floor(win.length / roll.length) - 1
+  min.window <- floor(init.val) + 1
+  max.window <- min.window + window.hold
+  list(min.window, max.window)
+}
+
+## sliding window creation 
+win.len.1 <- 180; win.len.2 <- 90
+roll.len <- 5; n <- length(crush.dat[,1])
+
+dt.window.1 <- dt.window %>%
+  mutate(window.min = window.min.max(num.index, win.len.1, roll.len)[[1]], 
+         window.max = window.min.max(num.index, win.len.1, roll.len)[[2]])
+dt.window.2 <- dt.window %>%
+  mutate(window.min = window.min.max(num.index, win.len.2, roll.len)[[1]], 
+         window.max = window.min.max(num.index, win.len.2, roll.len)[[2]])
+
+crush.window.1 <- crush.dat %>% 
+  as.data.frame() %>%
+  mutate(num.index = 0:(n-1)) %>% 
+  mutate(window.min = window.min.max(num.index, win.len.1, roll.len)[[1]], 
+         window.max = window.min.max(num.index, win.len.1, roll.len)[[2]])
+ 
+crush.window.2 <- crush.dat %>% 
+  as.data.frame() %>%
+  mutate(num.index = 0:(n-1)) %>% 
+  mutate(window.min = window.min.max(num.index, win.len.2, roll.len)[[1]], 
+         window.max = window.min.max(num.index, win.len.2, roll.len)[[2]])
+
+crush.roll.window <- function(data) {
+  max.window <- max(data$window.max)
+  cr.vec <- rep(NA, max.window)
+  
+  for (i in 0:(max.window-5)) {
+    temp.window <- data %>% filter(window.min <= i & window.max >= i)
+    temp.vecm <- VECM(temp.window[,2:4], lag = 4, estim = "ML", include = "const")
+    temp.ranktest <- rank.test(temp.vecm, cval = 0.05)
+    coint.rank <- temp.ranktest$r
+    cr.vec[i+1] <- coint.rank
+  }
+  cr.vec
+}
+
+## 60 day roll period  
+roll.120day <- crush.roll.window(crush.window.1)
+index.min <- seq(1, 2996, by = 5)
+index.max.1 <- seq(121, 3116, by = 5)
+cr.ind.1 <- cbind(na.omit(roll.120day), index.min, index.max.1)
+data.frame(cr.ind.1)
+
+## 90 day roll period 
+roll.90day <- crush.roll.window(crush.window.2) 
+index.max.2 <- seq(91, 3086, by = 5)
+cr.ind.2 <- cbind(na.omit(roll.90day), index.min, index.max.2)
+data.frame(cr.ind.2)
+```
+
+Difficult to identify meaningful cointegration from the raw rolling window -- see example 5 in synthetic data for rationale; some sort of dynamic windowing may be appropriate. 
+
+```{r, PART 3 COINTEGRATION ANGLES}
+## fixed cointegration rank 1 cointegration vector angle calculation 
+angle <- function(v1, v2) {
+  theta <- acos(sum(v1*v2) / (norm(v1, type = "2")*norm(v2, type = "2")))
+  theta
+}
+
+## angle calculation holding cointegration rank static at 1 
+roll.angle.1 <- function(data, c.rank = 1) {
+  max.window <- max(data$window.max) 
+  angle.vec <- rep(NA, max.window)
+  
+  init.dat <- data %>% filter(window.min <= 0 & window.max >= 0)
+  init.vecm <- VECM(init.dat[,2:4], r = c.rank, lag = 4, estim = "ML", include = "const")
+  prev.beta <- coefB(init.vecm)
+  
+  for (i in 1:(max.window-5)) {
+    temp.dat <- data %>% filter(window.min <= i & window.max >= i)
+    temp.vecm <- VECM(temp.dat[,2:4], r = c.rank, 
+                          lag = 4, estim = "ML", include = "const")
+    temp.beta <- coefB(temp.vecm)
+    temp.angle <- angle(temp.beta, prev.beta)
+    angle.vec[i] <- temp.angle
+    prev.beta <- temp.beta
+  }
+  angle.vec 
+}
+
+angle.120day <- roll.angle.1(crush.window.1)
+angle.90day <- roll.angle.1(crush.window.2)
+
+ts.plot(na.omit(angle.120day), main = "Angle Between CI Basis: Rank 1, 120 Day Roll", 
+        ylab = "Angle", xlab = "Window")
+ts.plot(na.omit(angle.90day), main = "Angle Between CI Basis: Rank 1, 90 Day Roll", 
+        ylab = "Angle", xlab = "Window")
+```
+
+Still difficult to parse -- no extreme regime separation as seen in synthetic data example 5, although there is a region of moderate stability between approximately windows 170 and 250 -- next step combines window selection with future curve convexity. 
+
+```{r, PART 4 WINDOW IDENTIFICATION}
+## identify regime shifts in future curve
+full.curve.sgn <- full.curve %>%
+  mutate(six.sgn = sign(six.mo), year.sgn = sign(year), 
+         six.shift = lag(six.sgn), year.shift = lag(year.sgn))
+
+regime.shift.1 <- full.curve.sgn %>% 
+  filter(six.sgn != six.shift | is.na(six.shift)) %>%
+  dplyr::select(time, six.mo, six.sgn, six.shift)
+colnames(regime.shift.1) <- c("dt", "six.mo", "six.sgn", "six.shift")
+
+regime.shift.2 <- full.curve.sgn %>% 
+  filter(year.sgn != year.shift | is.na(year.shift)) %>%
+  dplyr::select(time, year, year.sgn, year.shift)
+colnames(regime.shift.2) <- c("dt", "year", "year.sgn", "year.shift")
+
+## isolate breakpoints of interest 
+crush.window.six <- left_join(crush.dat, regime.shift.1, by = "dt")
+crush.window.year <- left_join(crush.dat, regime.shift.2, by = "dt")
+
+crush.breaks.six <- drop_na(crush.window.six)$dt
+crush.breaks.year <- drop_na(crush.window.year)$dt
+```
+
+```{r, PART 4 REGIME-DEPENDENT COINTEGRATION BREAKS}
+## windowed cointegration rank check
+coint.fixed.window <- function(data, break.vec, c.rank = 1){
+  win.start <- data$dt[1]
+  cr.vec <- rep(NA, length(break.vec)); counter <- 1
+  
+  while(counter < length(break.vec)) {
+    win.end <- break.vec[counter+1]
+    temp.dat <- data %>% filter(dt >= win.start & dt <= win.end)
+    
+    # extend window to capture sufficient data
+    if(length(temp.dat[,1]) < 30) {
+      counter <- counter + 1
+      next 
+    } 
+    else {
+      temp.vecm <- VECM(temp.dat[,2:4], r = c.rank, 
+                        lag = 4, estim = "ML", include = "const")
+      temp.rank <- rank.test(temp.vecm)$r
+      cr.vec[counter] <- temp.rank
+      win.start <- win.end 
+    }
+    counter <- counter + 1
+  }
+  cr.vec
+}
+
+cr.six.regimes <- cbind(coint.fixed.window(crush.dat, crush.breaks.six),
+                        crush.breaks.six)
+cr.year.regimes <- cbind(coint.fixed.window(crush.dat, crush.breaks.year),
+                         crush.breaks.year)
+
+cr.six.comp <- data.frame(na.omit(cr.six.regimes))
+cr.year.comp <- data.frame(na.omit(cr.year.regimes))
+```
+
+```{r, PART 4 VERIFYING INTERVALS}
+cr.six.comp
+cr.year.comp
+```
+
+23 distinct cointegration (or lack thereof) regions identified based on six-month spread; 17 identified based on yearlong spread. Cointegration vector angle difference between regions is checked.  
+
+```{r, PART 5 INFORMED REGIME ANGLE CHECKS}
+## find angle within 
+temp <- crush.dat %>% filter(dt > 1662940800)
+tempvecm <- VECM(temp[,2:4], lag = 4, include = "const", estim = "ML")
+summary(ca.jo(temp[,2:4], type = "eigen", ecdet = "none", K = 5, spec = "transitory"))
+s <- rank.test(tempvecm, cval = 0.1)
+ts.plot(temp[,2:4], col = rainbow(3))
+
+### LAST PIECES: INFORMED REGIME COINTEGRATION; INFORMED REGIME ANGLE CHECKS (?); STATIONARITY TESTS FOR EACH PERIOD'S IDENTIFIED COINTEGRATION RELATION
+```
+
+
