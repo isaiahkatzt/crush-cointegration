@@ -23,15 +23,14 @@ library(anytime)
 library(viridis)
 library(grid)
 library(gridExtra)
-
 ```
 
 ### PART 1: DATA CLEANING 
 ```{r, DATA READING AND CLEANING, fig.align = "center", out.width = "60%"}
 # raw data read -- daily increments
-zm <- read.csv("ProjectData/ZM-12YR-DAILY.csv")
-zl <- read.csv("ProjectData/ZL-12YR-DAILY.csv")
-zs <- read.csv("ProjectData/ZS-12YR-DAILY.csv")
+zm <- read.csv("ProjectData/front-month/ZM-12YR-DAILY.csv")
+zl <- read.csv("ProjectData/front-month/ZL-12YR-DAILY.csv")
+zs <- read.csv("ProjectData/front-month/ZS-12YR-DAILY.csv")
 
 zm.dt <- zm %>% mutate("datetime" = anytime(time)) %>% dplyr::select(close, datetime)
 zl.dt <- zl %>% mutate("datetime" = anytime(time)) %>% dplyr::select(close, datetime)
@@ -44,15 +43,26 @@ sum(zm.dt$datetime != zl.dt$datetime)
 crush.dat <- data.frame(cbind(zs.dt$datetime, zs.dt$close, zl.dt$close, zm.dt$close))
 colnames(crush.dat) <- c("dt", "ZS", "ZL", "ZM")
 
-ts.plot(cbind(zs.dt$close, zm.dt$close*2.2, zl.dt$close*11), 
-        main = "Soybean, soymeal, and soyoil futures prices (scaled by trading weights)", 
+crush.normalized <- crush.dat %>% 
+  mutate(ZS = ZS/100, ZM = ZM * 0.022, ZL = ZL*(11/100))
+
+ts.plot(cbind(zs.dt$close/100, zm.dt$close*0.022, zl.dt$close*(11/100)), 
+        main = "Soybean, soymeal, and soyoil futures prices (scaled by crush ratios)", 
         lty = c(1:3), col = rainbow(3))
-legend("bottomright", legend = c("Soybean", "Soymeal * 2.2", "Soyoil * 11"), 
+legend("bottomright", legend = c("Soybean $/bushel", "Soymeal $/bushel", "Soyoil $/bushel"),
        col = rainbow(3), lty = 1:3, cex = 0.8, bg = "white")
 
-ts.plot(crush.dat$ZS, main = "Soybean front month future prices", ylab = "Price")
-ts.plot(crush.dat$ZL, main = "Soyoil front month future prices",  ylab = "Price")
-ts.plot(crush.dat$ZM, main = "Soymeal front month future prices", ylab = "Price")
+ts.plot(crush.normalized$ZS, 
+        main = "Soybean front month future prices, $/bushel", ylab = "Price")
+ts.plot(crush.normalized$ZL, 
+        main = "Soyoil front month future prices, $/bushel",  ylab = "Price")
+ts.plot(crush.normalized$ZM, 
+        main = "Soymeal front month future prices, $/bushel", ylab = "Price")
+
+normalized.crush.value <- crush.normalized$ZS - 
+  1.1*crush.normalized$ZM - 0.9*crush.normalized$ZL
+ts.plot(normalized.crush.value, main = "Soybean Crush ($/bushel)", 
+        ylab = "Price", xlab = "Time")
 ```
 
 ```{r, FORWARD CURVE RECONSTRUCTION}
@@ -311,13 +321,23 @@ h24.data <- cal.split(curve.lists$curve.list.h$h24.merge) %>%
 cal23.24 <- rbind(k23.data, n23.data, u23.data, x23.data, f24.data, h24.data)
 
 
-full.curve <- rbind(cal12.13, cal13.14, cal14.15, cal15.16, cal16.17, 
-                    cal17.18, cal18.19, cal20.21, cal21.22, cal22.23, cal23.24)
+full.curve <- rbind(cal12.13, cal13.14, cal14.15, cal15.16, cal16.17, cal17.18,
+                    cal18.19, cal19.20, cal20.21, cal21.22, cal22.23, cal23.24)
 ts.plot(full.curve[,2:3], col = viridis(20)[c(5,15)], 
-        main = "6-Month and 12-Month Short Calendar Spread", 
+        main = "6-Month and 12-Month Soybean Short Calendar Spread", 
         xlab = "Time", ylab = "Price")
 abline(h = 0, col = "red", lty = 2)
 legend(2000,400, c("6MO", "12MO"), lty = c(1,1), col = viridis(20)[c(5,15)])
+```
+
+```{r, FORWARD CURVE BASIC ANALYSIS}
+mean(sign(full.curve$six.mo) == sign(full.curve$year))
+max(abs(full.curve$six.mo))
+max(abs(full.curve$year))
+
+mean(abs(full.curve$six.mo) > abs(full.curve$year))
+mean(full.curve$year)
+mean(full.curve$six.mo)
 ```
 
 ### PART 2: JOHANSEN TEST AND FULL COINTEGRATION  
@@ -326,6 +346,9 @@ legend(2000,400, c("6MO", "12MO"), lty = c(1,1), col = viridis(20)[c(5,15)])
 ## naive VAR fit for full dataset
 full.crush.lag <- VARselect(crush.dat[,2:4], lag.max = 9, type = "none")
 full.crush.lag$selection 
+
+norm.crush.lag <- VARselect(crush.normalized[,2:4], lag.max = 9, type = "none")
+norm.crush.lag$selection
 
 ## unit root checks in ZS, ZL, ZM series 
 zs.unit.stat <- summary(ur.df(crush.dat$ZS, type = "drift", selectlags = "AIC"))
@@ -353,27 +376,62 @@ full.tracestat <- ca.jo(crush.dat[,2:4], type = "trace", ecdet = "none",
                         K = 5, spec = "transitory")
 summary(full.tracestat)
 
-## fitted as VECM  
-full.vecm <- VECM(crush.dat[,2:4], r = 1, lag = 4,include = "const", 
+full.norm.eigenstat <- ca.jo(crush.normalized[,2:4], type = "eigen", ecdet = "none", 
+                        K = 5, spec = "transitory")
+summary(full.norm.eigenstat)
+
+full.norm.tracestat <- ca.jo(crush.normalized[,2:4], type = "trace", ecdet = "none", 
+                        K = 5, spec = "transitory")
+summary(full.norm.tracestat)
+
+## fitted as VECM
+full.vecm <- VECM(crush.dat[,2:4], r = 1, lag = 4, include = "const", 
                   estim = "ML", LRinclude = "none")
+rank.test(full.vecm)
+
+full.vecm.norm <- VECM(crush.normalized[,2:4], r = 1, lag = 4, include = "const", 
+                  estim = "ML", LRinclude = "none")
+rank.test(full.vecm.norm)
+
+summary(full.vecm.norm)
 ```
 
 Maximum eigenvalue and trace statistics suggest cointegration rank 1. Note this result assumes cointegration remains constant over the entire timeframe considered. 
 
 ```{r, FULL TIMEFRAME JOHANSEN TEST RESULT ANALYSIS, fig.align="center", out.width="50%"}
 ## coefficient collection 
-summary(full.vecm)
-full.beta <- coefB(full.vecm)
-full.alpha <- coefA(full.vecm)
-full.zt <- crush.dat$ZS*full.beta[1] + crush.dat$ZL*full.beta[2] +
-  crush.dat$ZM*full.beta[3]
-ts.plot(full.zt, main = "Potentially stationary combination of crush pieces ", 
-        xlab = "Time", ylab = "Value")
+summary(full.vecm.norm)
+full.beta <- coefB(full.vecm.norm)
+full.alpha <- coefA(full.vecm.norm)
+full.zt <- crush.normalized$ZS*full.beta[1] + crush.normalized$ZL*full.beta[2] +
+  crush.normalized$ZM*full.beta[3]
+ts.plot(cbind(full.zt, normalized.crush.value), 
+        main = "Cointegration Residual and Board Crush", 
+        xlab = "Time", ylab = "Value", 
+        lty = c(1,2), col = rainbow(3)[c(1,3)])
+legend("bottomright", legend = c("Cointegration Residual", "Board Crush"),
+       col = rainbow(3)[c(1,3)], lty = 1:2, cex = 0.8, bg = "white")
+
 
 ur.df(full.zt, type = "drift", selectlags = "AIC")
+adf.test(full.zt)
+
+mean(full.zt/normalized.crush.value)
+mean((full.zt < normalized.crush.value))
+
+mean(full.zt[2250:length(full.zt)]/normalized.crush.value[2250:length(full.zt)])
+mean(full.zt[2250:length(full.zt)] < normalized.crush.value[2250:length(full.zt)])
 ```
 
-ADF test suggests stationarity in $z_t = \beta y_t$ process. Next we consider time-varying cointegration. 
+```{r, RESULTING VECM DIAGNOSTICS}
+## checks for residual normality and autocorrelation
+var.formulation <- vec2var(full.norm.tracestat)
+normality.test(var.formulation)
+serial.test(var.formulation)
+## model fails both tests; indicates nonnormal, autocorrelated residuals 
+```
+
+ADF test suggests stationarity in $z_t = \beta y_t$ process, but VECM parameters poorly estimated based on normality and autocorrelation tests. Problematic tests noted for future reference, but as main focus is estimating cointegration rank and relation rather than full VECM, ignored for now. 
 
 ```{r, PART 3 ROLLING WINDOW}
 ## construct 90 day intervals 
@@ -394,7 +452,7 @@ window.min.max <- function(num.index, win.length, roll.length) {
 }
 
 ## sliding window creation 
-win.len.1 <- 180; win.len.2 <- 90
+win.len.1 <- 120; win.len.2 <- 90; win.len.3 <- 60; win.len.4 <- 250
 roll.len <- 5; n <- length(crush.dat[,1])
 
 dt.window.1 <- dt.window %>%
@@ -403,6 +461,12 @@ dt.window.1 <- dt.window %>%
 dt.window.2 <- dt.window %>%
   mutate(window.min = window.min.max(num.index, win.len.2, roll.len)[[1]], 
          window.max = window.min.max(num.index, win.len.2, roll.len)[[2]])
+dt.window.3 <- dt.window %>%
+  mutate(window.min = window.min.max(num.index, win.len.3, roll.len)[[1]], 
+         window.max = window.min.max(num.index, win.len.3, roll.len)[[2]])
+dt.window.4 <- dt.window %>%
+  mutate(window.min = window.min.max(num.index, win.len.4, roll.len)[[1]], 
+         window.max = window.min.max(num.index, win.len.4, roll.len)[[2]])
 
 crush.window.1 <- crush.dat %>% 
   as.data.frame() %>%
@@ -410,11 +474,41 @@ crush.window.1 <- crush.dat %>%
   mutate(window.min = window.min.max(num.index, win.len.1, roll.len)[[1]], 
          window.max = window.min.max(num.index, win.len.1, roll.len)[[2]])
  
+crush.window.1.norm <- crush.normalized %>% 
+  as.data.frame() %>%
+  mutate(num.index = 0:(n-1)) %>% 
+  mutate(window.min = window.min.max(num.index, win.len.1, roll.len)[[1]], 
+         window.max = window.min.max(num.index, win.len.1, roll.len)[[2]])
+
 crush.window.2 <- crush.dat %>% 
   as.data.frame() %>%
   mutate(num.index = 0:(n-1)) %>% 
   mutate(window.min = window.min.max(num.index, win.len.2, roll.len)[[1]], 
          window.max = window.min.max(num.index, win.len.2, roll.len)[[2]])
+
+crush.window.2.norm <- crush.normalized %>% 
+  as.data.frame() %>%
+  mutate(num.index = 0:(n-1)) %>% 
+  mutate(window.min = window.min.max(num.index, win.len.2, roll.len)[[1]], 
+         window.max = window.min.max(num.index, win.len.2, roll.len)[[2]])
+
+crush.window.3 <- crush.dat %>% 
+  as.data.frame() %>%
+  mutate(num.index = 0:(n-1)) %>% 
+  mutate(window.min = window.min.max(num.index, win.len.3, roll.len)[[1]], 
+         window.max = window.min.max(num.index, win.len.3, roll.len)[[2]])
+
+crush.window.3.norm <- crush.normalized %>% 
+  as.data.frame() %>%
+  mutate(num.index = 0:(n-1)) %>% 
+  mutate(window.min = window.min.max(num.index, win.len.3, roll.len)[[1]], 
+         window.max = window.min.max(num.index, win.len.3, roll.len)[[2]])
+
+crush.window.4.norm <- crush.normalized %>% 
+  as.data.frame() %>%
+  mutate(num.index = 0:(n-1)) %>% 
+  mutate(window.min = window.min.max(num.index, win.len.4, roll.len)[[1]], 
+         window.max = window.min.max(num.index, win.len.4, roll.len)[[2]])
 
 crush.roll.window <- function(data) {
   max.window <- max(data$window.max)
@@ -423,14 +517,14 @@ crush.roll.window <- function(data) {
   for (i in 0:(max.window-5)) {
     temp.window <- data %>% filter(window.min <= i & window.max >= i)
     temp.vecm <- VECM(temp.window[,2:4], lag = 4, estim = "ML", include = "const")
-    temp.ranktest <- rank.test(temp.vecm, cval = 0.05)
+    temp.ranktest <- rank.test(temp.vecm, type = "trace", cval = 0.1)
     coint.rank <- temp.ranktest$r
     cr.vec[i+1] <- coint.rank
   }
   cr.vec
 }
 
-## 60 day roll period  
+## 120 day roll period  
 roll.120day <- crush.roll.window(crush.window.1)
 index.min <- seq(1, 2996, by = 5)
 index.max.1 <- seq(121, 3116, by = 5)
@@ -442,6 +536,42 @@ roll.90day <- crush.roll.window(crush.window.2)
 index.max.2 <- seq(91, 3086, by = 5)
 cr.ind.2 <- cbind(na.omit(roll.90day), index.min, index.max.2)
 data.frame(cr.ind.2)
+
+## 60 day roll period 
+roll.60day <- crush.roll.window(crush.window.3) 
+index.max.3 <- seq(61, 3056, by = 5)
+cr.ind.3 <- cbind(na.omit(roll.60day), index.min, index.max.3)
+data.frame(cr.ind.3)
+```
+
+```{r, PART 3 NORMALIZED ROLL WINDOWS}
+## normalized 120 day roll
+roll.120norm <- crush.roll.window(crush.window.1.norm)
+cr.norm.1 <- cbind(na.omit(roll.120norm), index.min, index.max.1)
+data.frame(cr.norm.1)
+
+length((cr.norm.1 %>% data.frame %>% filter(V1 == 1))[,1])
+cr.norm.1 %>% data.frame() %>% filter(V1 == 2)
+
+## normalized 90 day roll 
+roll.90norm <- crush.roll.window(crush.window.2.norm) 
+cr.norm.2 <- cbind(na.omit(roll.90norm), index.min, index.max.2)
+data.frame(cr.norm.2)
+
+length((cr.norm.2 %>% data.frame %>% filter(V1 == 1))[,1])
+cr.norm.2 %>% data.frame() %>% filter(V1 == 2)
+## normalized 60 day roll 
+roll.60norm <- crush.roll.window(crush.window.3.norm) 
+cr.norm.3 <- cbind(na.omit(roll.60norm), index.min, index.max.3)
+data.frame(cr.norm.3)
+
+length((cr.norm.3 %>% data.frame %>% filter(V1 == 1))[,1])
+cr.norm.3 %>% data.frame() %>% filter(V1 == 2)
+
+## normalize 240 day roll 
+roll.240norm <- crush.roll.window(crush.window.4.norm) 
+cr.norm.4 <- cbind(na.omit(roll.240norm), index.min, index.max.3)
+data.frame(cr.norm.4)
 ```
 
 Difficult to identify meaningful cointegration from the raw rolling window -- see example 5 in synthetic data for rationale; some sort of dynamic windowing may be appropriate. 
@@ -474,16 +604,196 @@ roll.angle.1 <- function(data, c.rank = 1) {
   angle.vec 
 }
 
+## cointegration vector selection 
+roll.coef.1 <- function(data, c.rank = 1) {
+  max.window <- max(data$window.max) 
+  coef.list <- list()
+  
+  for (i in 0:(max.window-5)) {
+    temp.dat <- data %>% filter(window.min <= i & window.max >= i)
+    temp.vecm <- VECM(temp.dat[,2:4], r = c.rank, 
+                          lag = 4, estim = "ML", include = "const")
+    temp.beta <- coefB(temp.vecm)
+    coef.list[[length(coef.list)+1]] <- temp.beta
+  }
+  coef.list 
+}
+
+```
+
+```{r, ANGLE PLOTS }
 angle.120day <- roll.angle.1(crush.window.1)
 angle.90day <- roll.angle.1(crush.window.2)
+angle.60day <- roll.angle.1(crush.window.3)
 
+angle.120norm <- roll.angle.1(crush.window.1.norm)
+angle.90norm <- roll.angle.1(crush.window.2.norm)
+angle.60norm <- roll.angle.1(crush.window.3.norm)
+angle.240norm <- roll.angle.1(crush.window.4.norm)
+
+par(mfrow=c(1,3))
 ts.plot(na.omit(angle.120day), main = "Angle Between CI Basis: Rank 1, 120 Day Roll", 
         ylab = "Angle", xlab = "Window")
 ts.plot(na.omit(angle.90day), main = "Angle Between CI Basis: Rank 1, 90 Day Roll", 
         ylab = "Angle", xlab = "Window")
+ts.plot(na.omit(angle.60day), main = "Angle Between CI Basis: Rank 1, 60 Day Roll", 
+        ylab = "Angle", xlab = "Window")
+
+par(mfrow=c(1,3))
+ts.plot(na.omit(angle.120norm), 
+        main = "Rank 1, Normalized 120 Day Roll", 
+        ylab = "Angle", xlab = "Window")
+ts.plot(na.omit(angle.90norm), 
+        main = "Rank 1, Normalized 90 Day Roll", 
+        ylab = "Angle", xlab = "Window")
+ts.plot(na.omit(angle.60norm), 
+        main = "Rank 1, Normalized 60 Day Roll", 
+        ylab = "Angle", xlab = "Window")
+ts.plot(na.omit(angle.240norm), 
+        main = "Rank 1, Normalized 240 Day Roll", 
+        ylab = "Angle", xlab = "Window")
 ```
 
-Still difficult to parse -- no extreme regime separation as seen in synthetic data example 5, although there is a region of moderate stability between approximately windows 170 and 250 -- next step combines window selection with future curve convexity. 
+```{r, COINTEGRATION VECTOR SELECTION }
+## cointegration vector selection (overlapping windows)
+coef60 <- roll.coef.1(crush.window.3.norm)
+coef90 <- roll.coef.1(crush.window.2.norm)
+coef120 <- roll.coef.1(crush.window.1.norm)
+coef240 <- roll.coef.1(crush.window.4.norm)
+
+
+avg.shift <- lapply(coef90, FUN = function(x) {x / c(1,-0.9,-1.1) - c(1,1,1)})
+med.shift.ZL <- median(sapply(coef90[1:510], function(x) x[2]))
+med.shift.ZM <- median(sapply(coef90[1:510], function(x) x[3]))
+
+avg.shift.240 <- lapply(coef240, FUN = function(x) {x / c(1,-0.9,-1.1) - c(1,1,1)})
+med.shift.ZL.240 <- median(sapply(coef240[1:510], function(x) x[2]))
+med.shift.ZM.240 <- median(sapply(coef240[1:510], function(x) x[3]))
+
+avg.shift.120 <- lapply(coef120, FUN = function(x) {x / c(1,-0.9,-1.1) - c(1,1,1)})
+med.shift.ZL.120 <- median(sapply(coef120[1:510], function(x) x[2]))
+med.shift.ZM.120 <- median(sapply(coef120[1:510], function(x) x[3]))
+
+avg.shift.60 <- lapply(coef60, FUN = function(x) {x / c(1,-0.9,-1.1) - c(1,1,1)})
+med.shift.ZL.60 <- median(sapply(coef60[1:510], function(x) x[2]))
+med.shift.ZM.60 <- median(sapply(coef60[1:510], function(x) x[3]))
+```
+
+Still difficult to parse -- no extreme regime separation as seen in synthetic data example 5. Subsequent testing done with data split according to stable regions identified by 90-day angles. 
+
+```{r, ROLL ANGLE RANK 2}
+## projection 
+proj.min.2d <- function(v1, v2, w1, w2) {
+  pairs <- list(cbind(v1,w1), cbind(v1,w2), cbind(v2,w1), cbind(v2,w2))
+  curr.min <- 1e6
+  pair.min <- NA
+  for (pair in pairs) {
+    temp.len <- sum(pair[,1]*pair[,2]) / norm(pair[,2], type = "2")
+    if (temp.len < curr.min) {
+      pair.min <- pair
+    }
+  }
+  pair.min 
+}
+
+## rank 2 angle calculation
+roll.angle.2 <- function(data, c.rank = 2) {
+  max.window <- max(data$window.max) 
+  angle.vec <- rep(NA, max.window)
+  
+  init.dat <- data %>% filter(window.min <= 0 & window.max >= 0)
+  init.vecm <- VECM(init.dat[,2:4], r = c.rank, lag = 4, estim = "ML", include = "const")
+  prev.beta <- coefB(init.vecm)
+  
+  for (i in 1:(max.window-2)) {
+    temp.dat <- data %>% filter(window.min <= i & window.max >= i)
+    temp.vecm <- VECM(temp.dat[,2:4], r = c.rank, 
+                          lag = 1, estim = "ML", include = "const")
+    temp.beta <- coefB(temp.vecm)
+    proj.pair <- proj.min.2d(temp.beta[,1], temp.beta[,2], 
+                             prev.beta[,1], prev.beta[,2])
+    temp.angle <- angle(proj.pair[,1], proj.pair[,2])
+    angle.vec[i] <- temp.angle
+    prev.beta <- temp.beta
+  }
+  angle.vec 
+}
+
+angle2.120norm <- roll.angle.2(crush.window.1.norm)
+angle2.90norm <- roll.angle.2(crush.window.2.norm)
+angle2.60norm <- roll.angle.2(crush.window.3.norm)
+
+par(mfrow=c(1,3))
+ts.plot(na.omit(angle2.120norm), 
+        main = "Rank 2, Normalized 120 Day Roll", 
+        ylab = "Angle", xlab = "Window")
+ts.plot(na.omit(angle2.90norm), 
+        main = "Rank 2, Normalized 90 Day Roll", 
+        ylab = "Angle", xlab = "Window")
+ts.plot(na.omit(angle2.60norm), 
+        main = "Rank 2, Normalized 60 Day Roll", 
+        ylab = "Angle", xlab = "Window")
+```
+
+```{r, STABLE WINDOW PERIODS}
+## 120 day stable period selections and tests 
+angle.breaks.temp.1 <- data.frame(cbind(na.omit(angle.120day), 1:599))
+angle.breaks.1 <- angle.breaks.temp.1 %>% filter(X1 > 0.5) %>% dplyr::select(X2)
+
+fixed.breakpoint.roll <- function(window.data, breakpoints) {
+  rank.vec <- rep(NA, length(breakpoints))
+  start.break <- 0
+  
+  for(i in 1:length(breakpoints[,1])) {
+    end.break <- breakpoints[,1][i]
+    temp.dat <- window.data %>% filter(window.min <= start.break & window.min <= end.break)
+    temp.vecm <- VECM(temp.dat[,2:4], lag = 4, include = "const", estim = "ML")
+    r <- rank.test(temp.vecm, cval = 0.10)$r
+    start.break <- end.break
+    rank.vec[i] <- r
+  }
+  rank.vec
+}
+cr.measure.1 <- fixed.breakpoint.roll(crush.window.1, angle.breaks.1)
+cr.measure.1
+
+## 90 day stable period selections and tests 
+angle.breaks.temp.2 <- data.frame(cbind(na.omit(angle.90day), 1:599))
+angle.breaks.2 <- angle.breaks.temp.2 %>% filter(X1 > 0.5) %>% dplyr::select(X2)
+
+cr.measure.2 <- fixed.breakpoint.roll(crush.window.2, angle.breaks.2)
+cr.measure.2
+
+## 60 day stable period selections and tests
+angle.breaks.temp.3 <- data.frame(cbind(na.omit(angle.60day), 1:599))
+angle.breaks.3 <- angle.breaks.temp.3 %>% filter(X1 > 0.5) %>% dplyr::select(X2)
+
+cr.measure.3 <- fixed.breakpoint.roll(crush.window.3, angle.breaks.3)
+cr.measure.3
+```
+
+```{r}
+## normalized 120 day stable period rank test
+angle.norm.temp.1 <- data.frame(cbind(na.omit(angle.120norm), 1:599))
+angle.norm.1 <- angle.norm.temp.1 %>% filter(X1 > 1.5) %>% dplyr::select(X2)
+
+cr.norm.1 <- fixed.breakpoint.roll(crush.window.1.norm, angle.norm.1)
+cr.norm.1
+
+## normalized 90 day stable period rank tests
+angle.norm.temp.2 <- data.frame(cbind(na.omit(angle.90norm), 1:599))
+angle.norm.2 <- angle.norm.temp.2 %>% filter(X1 > 1.5) %>% dplyr::select(X2)
+
+cr.norm.2 <- fixed.breakpoint.roll(crush.window.2.norm, angle.norm.2)
+cr.norm.2
+
+## 240 day stable period selections and tests 
+angle.norm.temp.4 <- data.frame(cbind(na.omit(angle.240norm), 1:599))
+angle.norm.4 <- angle.breaks.temp.4 %>% filter(X1 > 1.5) %>% dplyr::select(X2)
+
+cr.norm.4 <- fixed.breakpoint.roll(crush.window.4.norm, angle.norm.4)
+cr.norm.4
+```
 
 ```{r, PART 4 WINDOW IDENTIFICATION}
 ## identify regime shifts in future curve
@@ -502,11 +812,29 @@ regime.shift.2 <- full.curve.sgn %>%
 colnames(regime.shift.2) <- c("dt", "year", "year.sgn", "year.shift")
 
 ## isolate breakpoints of interest 
-crush.window.six <- left_join(crush.dat, regime.shift.1, by = "dt")
-crush.window.year <- left_join(crush.dat, regime.shift.2, by = "dt")
+crush.window.six <- left_join(crush.normalized, regime.shift.1, by = "dt")
+crush.window.year <- left_join(crush.normalized, regime.shift.2, by = "dt")
 
 crush.breaks.six <- drop_na(crush.window.six)$dt
 crush.breaks.year <- drop_na(crush.window.year)$dt
+
+break.indices.six <- match(crush.breaks.six, crush.window.six$dt)
+six.past <- break.indices.six - lag(break.indices.six)
+six.lead.lag <- data.frame(cbind(break.indices.six, six.past))
+break.six <- six.lead.lag %>%
+  mutate(iso = ifelse((six.past > 240), 1, 
+                      ifelse((six.past > 120), 2, 0))) %>%
+  dplyr::select(break.indices.six, iso)
+
+break.indices.year <- match(crush.breaks.year, crush.window.year$dt)
+year.past <- break.indices.year - lag(break.indices.year)
+year.lead.lag <- data.frame(cbind(break.indices.year, year.past))
+break.year <- year.lead.lag %>%
+  mutate(iso = ifelse((year.past > 240), 1, 
+                      ifelse((year.past > 120), 2, 0))) %>%
+  dplyr::select(break.indices.year, iso)
+
+data.frame(break.six); data.frame(break.year)
 ```
 
 ```{r, PART 4 REGIME-DEPENDENT COINTEGRATION BREAKS}
@@ -536,9 +864,9 @@ coint.fixed.window <- function(data, break.vec, c.rank = 1){
   cr.vec
 }
 
-cr.six.regimes <- cbind(coint.fixed.window(crush.dat, crush.breaks.six),
+cr.six.regimes <- cbind(coint.fixed.window(crush.normalized, crush.breaks.six),
                         crush.breaks.six)
-cr.year.regimes <- cbind(coint.fixed.window(crush.dat, crush.breaks.year),
+cr.year.regimes <- cbind(coint.fixed.window(crush.normalized, crush.breaks.year),
                          crush.breaks.year)
 
 cr.six.comp <- data.frame(na.omit(cr.six.regimes))
@@ -546,21 +874,115 @@ cr.year.comp <- data.frame(na.omit(cr.year.regimes))
 ```
 
 ```{r, PART 4 VERIFYING INTERVALS}
-cr.six.comp
-cr.year.comp
+cr.six.comp  # cointegration between regime shifts (6 month)
+cr.year.comp  # cointegration between regime shifts (12 month)
 ```
 
-23 distinct cointegration (or lack thereof) regions identified based on six-month spread; 17 identified based on yearlong spread. Cointegration vector angle difference between regions is checked.  
-
-```{r, PART 5 INFORMED REGIME ANGLE CHECKS}
-## find angle within 
-temp <- crush.dat %>% filter(dt > 1662940800)
-tempvecm <- VECM(temp[,2:4], lag = 4, include = "const", estim = "ML")
-summary(ca.jo(temp[,2:4], type = "eigen", ecdet = "none", K = 5, spec = "transitory"))
-s <- rank.test(tempvecm, cval = 0.1)
-ts.plot(temp[,2:4], col = rainbow(3))
-
-### LAST PIECES: INFORMED REGIME COINTEGRATION; INFORMED REGIME ANGLE CHECKS (?); STATIONARITY TESTS FOR EACH PERIOD'S IDENTIFIED COINTEGRATION RELATION
+```{r}
+temp <- filter.dates(crush.normalized, start = 1598400000)
+summary(ca.jo(temp[,2:4], type = "trace", ecdet = "none", K = 4, spec = "transitory"))
 ```
 
+23 distinct cointegration (or lack thereof) regions identified based on six-month spread; 18 identified based on yearlong spread. 
+
+```{r, PART 4 COMPACT REGIME DEPENDENT INTERVALS}
+filter.dates <- function(dat, start=-1e10, end=1e10) {
+  new.dat <- dat %>% filter(dt > start & dt <= end)
+  new.dat
+}
+
+roll.coef.1 <- function(data, c.rank = 1) {
+  max.window <- max(data$window.max) 
+  coef.list <- list()
+  
+  for (i in 0:(max.window-5)) {
+    temp.dat <- data %>% filter(window.min <= i & window.max >= i)
+    temp.vecm <- VECM(temp.dat[,2:4], r = c.rank, 
+                          lag = 4, estim = "ML", include = "const")
+    temp.beta <- coefB(temp.vecm)
+    coef.list[[length(coef.list)+1]] <- temp.beta
+  }
+  coef.list 
+}
+
+## strongest rank 1 cointegration when both spreads approx flat?
+filter.roll.1 <- function(data, filter.vec, c.rank=1) {
+  coef.list <- list()
+  
+  init.dat <- filter.dates(data, end = filter.vec[1])
+  init.vecm <- VECM(init.dat[,2:4], r = c.rank, 
+                    lag = 4, estim = "ML", include = "const")
+  init.beta <- coefB(init.vecm)
+  coef.list[[1]] <- init.beta
+  
+  for(i in 1:(length(filter.vec)-1)){
+    temp.dat <- filter.dates(data, filter.vec[i], filter.vec[i+1])
+    temp.vecm <- VECM(temp.dat[,2:4], r = c.rank, 
+                          lag = 4, estim = "ML", include = "const")
+    temp.beta <- coefB(temp.vecm)
+    coef.list[[length(coef.list)+1]] <- temp.beta
+  }
+  
+  coef.list
+}
+
+regime.coint.1 <- filter.roll.1(crush.normalized, cr.six.comp[,2][2:19])
+med.ZLreg <- median(sapply(regime.coint.1, function(x) x[2]))
+med.ZMreg <- median(sapply(regime.coint.1, function(x) x[3]))
+```
+
+```{r, PART 5 INFORMED REGIME WINDOWS}
+## repeating process above with specified isolated and semi-isolated breakpoints
+iso.six <- (break.six %>% filter(iso == 1))$break.indices.six
+semi.iso.six <- (break.six %>% filter(iso > 0))$break.indices.six
+
+iso.year <- (break.year %>% filter(iso == 1))$break.indices.year
+semi.iso.year <- (break.year %>% filter(iso > 0))$break.indices.year
+
+iso.rank <- function(data, break.indices) {
+  start.window <- 1
+  cr.vec <- rep(NA, length(break.indices) + 1)
+  for(i in 1:length(break.indices)) {
+    end.window <- break.indices[i]
+    temp.dat <- data[start.window:end.window, 2:4]
+    temp.vecm <- VECM(temp.dat, lag = 4, r = 1, include = "const", estim = "ML")
+    temp.rank <- rank.test(temp.vecm, cval = 0.1)$r
+    cr.vec[i] <- temp.rank 
+    start.window <- end.window
+  }
+  
+  last.dat <- data[start.window:length(data[,1]), 2:4]
+  last.vecm <- VECM(last.dat, lag = 4, r = 1, include = "const", estim = "ML")
+  last.rank <- rank.test(last.vecm, cval = 0.1)$r
+  cr.vec[length(break.indices)+1] <- last.rank
+  cr.vec
+}
+
+iso.rank1 <- function(data, break.indices) {
+  start.window <- 1
+  coef.list <- list()
+  for(i in 1:length(break.indices)) {
+    end.window <- break.indices[i]
+    temp.dat <- data[start.window:end.window, 2:4]
+    temp.vecm <- VECM(temp.dat, r = 1, lag = 4, include = "const", estim = "ML")
+    temp.coef <- coefB(temp.vecm)
+    coef.list[[i]] <- temp.coef 
+    start.window <- end.window
+  }
+  
+  last.dat <- data[start.window:length(data[,1]), 2:4]
+  last.vecm <- VECM(last.dat, r = 1, lag = 4, include = "const", estim = "ML")
+  last.coef <- coefB(last.vecm)
+  coef.list[[length(coef.list)+1]] <- last.coef
+  coef.list
+}
+
+six.shift <- iso.rank(crush.normalized, semi.iso.six)
+year.shift <- iso.rank(crush.normalized, semi.iso.year)
+
+six.coef <- iso.rank1(crush.normalized, semi.iso.six)
+med.ZL6 <- mean(sapply(six.coef, function(x) x[2]))
+med.ZM6 <- mean(sapply(six.coef, function(x) x[3]))
+
+```
 

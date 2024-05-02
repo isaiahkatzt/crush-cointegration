@@ -208,7 +208,7 @@ zt.ex3 <- yt.ex3[,1]*coint.vec.ex3[1] +
 ur.df(zt.ex3, selectlags = "AIC")
 ```
 
-Correctly estimates cointegration order 1. Estimated cointegrating vector yields stationary series as shown by ADF statistic. 
+Procedure correctly estimates cointegration order 1. Estimated cointegrating vector yields stationary series as shown by ADF statistic. 
 
 ### Example 4: Trivariate Cointegrated VAR(p) Process (2 relations)
 
@@ -402,7 +402,7 @@ cr.ind <- cbind(coint.rank, index.min, index.max)
 data.frame(cr.ind)
 ```
 
-Cointegration rank seems extremely sensitive -- overlapping with the shifting regime in any capacity derails cointegration and leads to cointegration rank zero (albeit regime shift is extremely sharp, which likely breaks relation down very quickly). Accurate cointegration rank testing only possible if we know what regime we're actually in. 
+Cointegration rank seems extremely sensitive -- overlapping with the shifting regime in any capacity derails cointegration and leads to cointegration rank zero (albeit regime shift is extremely sharp, which likely breaks relation down very quickly). Accurate cointegration rank testing only possible within windows spanning only a single regime.
 
 ```{r, EXAMPLE 5 EIGEN ANGLES, fig.align="center", out.width="50%"}
 ## calculate changing angle between cointegration vector across roll windows 
@@ -478,7 +478,7 @@ ts.plot(na.omit(angle.r2), main = "Angle Between CI Basis: Rank 2",
         xlab = "Window", ylab = "Angle (degrees)")
 ```
 
-Clear separation in angle measurement regions when holding rank 1 cointegration constant; difficult to establish clear separation of regimes via angle measures when holding rank 2 cointegration constant. 
+Separation is shown in angle measurements between different regimes when holding cointegration rank constant. 
 
 ```{r, EXAMPLE 6 / EXTENDED EX 5 EIGEN ANGLES KNOWN REGIMES}
 ## check angle measures in cointegration without regime switching: example 3
@@ -495,9 +495,9 @@ ex3.angle.2 <- roll.angle.2(yt.ex3.window)
 
 par(mfrow=c(1,2))
 ts.plot(ex3.angle.1, main = "EX3 Angles, CI Rank 1", 
-        xlab = "Window", ylab = "Angle (degrees)")
+        xlab = "Window", ylab = "Angle (degrees)", ylim = c(0,3))
 ts.plot(ex3.angle.2, main = "EX3 Angles, CI Rank 2", 
-        xlab = "Window", ylab = "Angle (degrees)")
+        xlab = "Window", ylab = "Angle (degrees)", ylim = c(0,3))
 ## check angle measures in cointegration without regime switching: example 4
 n <- length(yt.ex4[,1])
 
@@ -511,20 +511,24 @@ ex4.angle.1 <- roll.angle.1(yt.ex4.window)
 ex4.angle.2 <- roll.angle.2(yt.ex4.window)
 par(mfrow=c(1,2))
 ts.plot(ex4.angle.1, main = "EX4 Angles, CI Rank 1", 
-        xlab = "Window", ylab = "Angle (degrees)")
+        xlab = "Window", ylab = "Angle (degrees)", ylim = c(0,3))
 ts.plot(ex4.angle.2, main = "EX4 Angles, CI Rank 2", 
-        xlab = "Window", ylab = "Angle (degrees)")
+        xlab = "Window", ylab = "Angle (degrees)", ylim = c(0, 3))
 ```
 
 ```{r, EXAMPLE 6 VERIFICATION}
-## verify roll.window() accurately assesses cointegration rank for EX3, EX4
+## verify roll.window() accurately assesses cointegration rank for EX3
 (ex3.windowed.cr <- roll.window(yt.ex3.window))
 ex3.prop <- sum(na.omit(ex3.windowed.cr) == 1) / length(na.omit(ex3.windowed.cr))
-  
+ex3.prop 
+```
+
+```{r, EXAMPLE 6 VERIFICATION 2}
+## verify roll.window() accurately assesses cointegration rank for EX4
 (ex4.windowed.cr <- roll.window(yt.ex4.window))
 ex4.prop <- sum(na.omit(ex4.windowed.cr) == 2) / length(na.omit(ex4.windowed.cr))
 
-ex3.prop; ex4.prop
+ex4.prop
 ```
 
 Example 3 and example 4 cointegration rank correctly determined by 88.78% and 94.90% of tests. 
