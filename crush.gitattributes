@@ -1,3 +1,2 @@
-*.tex linguist-vendored
-*.cls linguist-vendored
-*.Rmd  linguist-detectable
+# Declare RMarkdown files as R code
+*.Rmd linguist-language=R
